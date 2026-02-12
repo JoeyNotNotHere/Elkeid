@@ -19,6 +19,38 @@ import (
 	"go.uber.org/zap"
 )
 
+type App struct {
+	Name    string
+	Version string
+	Type    string
+	Conf    string
+	Matched bool
+}
+type AppRule struct {
+	name              string
+	versionRegex      *regexp.Regexp
+	versionArgs       []string
+	_type             string
+	versionTrimPrefix string
+	versionTrimSuffix string
+	confFunc          func(RuleContext) string
+	matchFunc         func(RuleContext) ([]byte, *App)
+	sub               *AppRule
+}
+type RuleContext struct {
+	enterContainer bool
+	comm           string
+	uid            uint32
+	gid            uint32
+	dir            string
+	containerID    string
+	exe            string
+	cmdline        string
+	ppid           string
+	proc           process.Process
+	appVersion     string
+}
+
 var (
 	apacheRule = &AppRule{
 		name:              "apache",
@@ -65,6 +97,13 @@ var (
 			}
 			return ""
 		},
+		matchFunc: func(rc RuleContext) ([]byte, *App) {
+			cmdline := rc.cmdline
+			if strings.Contains(cmdline, "apisix") {
+				return &[]byte{}, &App{Name: "apache-apisix", Type: "web_service", Matched: true}
+			}
+			return nil, nil
+		},
 		sub: &AppRule{
 			name:              "tegine",
 			_type:             "web_service",
@@ -85,6 +124,13 @@ var (
 				}
 				return ""
 			},
+			matchFunc: func(rc RuleContext) ([]byte, *App) {
+				cmdline := rc.cmdline
+				if strings.Contains(cmdline, "apisix") {
+					return &[]byte{}, &App{Name: "apache-apisix", Type: "web_service", Matched: true}
+				}
+				return nil, nil
+			},
 			sub: &AppRule{
 				name:              "openresty",
 				_type:             "web_service",
@@ -104,6 +150,13 @@ var (
 						return "/etc/nginx/nginx.conf"
 					}
 					return ""
+				},
+				matchFunc: func(rc RuleContext) ([]byte, *App) {
+					cmdline := rc.cmdline
+					if strings.Contains(cmdline, "apisix") {
+						return &[]byte{}, &App{Name: "apache-apisix", Type: "web_service", Matched: true}
+					}
+					return nil, nil
 				},
 			},
 		},
@@ -387,41 +440,302 @@ var (
 		"dockerd":         dockerRule,
 		"containerd":      containerdRule,
 		"kubelet":         kubeletRule,
+		"java":            javaRule,
+		"python":          pythonRule,
+		"python2":         pythonRule,
+		"python3":         pythonRule,
+		"uwsgi":           pythonRule,
+		"gunicorn":        pythonRule,
+		"node":            nodeRule,
+		"tidb-server":     tidbRule,
+		"zabbix_server":   zabbixRule,
+		"rancher":         rancherRule,
+		"doris_be":        dorisBeRule,
+		"koko":            jumpserverKokoRule,
+		"salt-master":     pythonRule,
+		"salt-minion":     pythonRule,
+		"ansible":         pythonRule,
+		"ansible-playbook": pythonRule,
 	}
 )
 
-type App struct {
-	Name    string
-	Version string
-	Type    string
-	Conf    string
-	Matched bool
-}
-type AppRule struct {
-	name              string
-	versionRegex      *regexp.Regexp
-	versionArgs       []string
-	_type             string
-	versionTrimPrefix string
-	versionTrimSuffix string
-	confFunc          func(RuleContext) string
-	sub               *AppRule
-}
-type RuleContext struct {
-	enterContainer bool
-	comm           string
-	uid            uint32
-	gid            uint32
-	dir            string
-	containerID    string
-	exe            string
-	cmdline        string
-	ppid           string
-	proc           process.Process
-	appVersion     string
-}
+var (
+	// Define Java apps
+	kafkaRule = &AppRule{
+		name:              "kafka",
+		_type:             "message_queue",
+		versionRegex:      regexp.MustCompile(`kafka_\d+\.\d+-(\d+\.\d+\.\d+)`),
+		versionTrimPrefix: "",
+		confFunc: func(rc RuleContext) string {
+			res := regexp.MustCompile(`config\/server\.properties`).Find([]byte(rc.cmdline))
+			if res != nil {
+				return string(res)
+			}
+			return ""
+		},
+	}
+	rocketmqRule = &AppRule{
+		name:  "rocketmq",
+		_type: "message_queue",
+		confFunc: func(rc RuleContext) string {
+			return ""
+		},
+	}
+	nacosRule = &AppRule{
+		name:              "nacos",
+		_type:             "service_discovery",
+		versionRegex:      regexp.MustCompile(`nacos-server-(\d+\.\d+\.\d+)`),
+		versionTrimPrefix: "",
+		confFunc: func(rc RuleContext) string {
+			res := regexp.MustCompile(`-Dnacos\.home=(\S+)`).FindSubmatch([]byte(rc.cmdline))
+			if len(res) > 1 {
+				return filepath.Join(string(res[1]), "conf/application.properties")
+			}
+			return ""
+		},
+	}
+	elasticsearchRule = &AppRule{
+		name:              "elasticsearch",
+		_type:             "database",
+		versionRegex:      regexp.MustCompile(`elasticsearch-(\d+\.\d+\.\d+)`),
+		versionTrimPrefix: "",
+		confFunc: func(rc RuleContext) string {
+			res := regexp.MustCompile(`-Des\.path\.conf=(\S+)`).FindSubmatch([]byte(rc.cmdline))
+			if len(res) > 1 {
+				return filepath.Join(string(res[1]), "elasticsearch.yml")
+			}
+			return ""
+		},
+	}
+	jenkinsRule = &AppRule{
+		name:         "jenkins",
+		_type:        "devops",
+		versionRegex: regexp.MustCompile(`jenkins\.war`),
+		confFunc: func(rc RuleContext) string {
+			if envs, err := rc.proc.Envs(); err == nil {
+				if home, ok := envs["JENKINS_HOME"]; ok {
+					return filepath.Join(home, "config.xml")
+				}
+			}
+			return ""
+		},
+	}
+	logstashRule = &AppRule{
+		name:  "logstash",
+		_type: "devops",
+		confFunc: func(rc RuleContext) string {
+			return ""
+		},
+	}
+	djangoRule = &AppRule{
+		name:  "django",
+		_type: "web_service",
+		confFunc: func(rc RuleContext) string {
+			res := regexp.MustCompile(`--settings=(\S+)`).FindSubmatch([]byte(rc.cmdline))
+			if len(res) > 1 {
+				return string(res[1])
+			}
+			if envs, err := rc.proc.Envs(); err == nil {
+				if s, ok := envs["DJANGO_SETTINGS_MODULE"]; ok {
+					return s
+				}
+			}
+			return ""
+		},
+	}
+	// General Java Rule
+	javaRule = &AppRule{
+		name: "java_app",
+		confFunc: func(rc RuleContext) string {
+			cmdline := rc.cmdline
+			if strings.Contains(cmdline, "kafka") {
+				return kafkaRule.confFunc(rc)
+			}
+			if strings.Contains(cmdline, "rocketmq") {
+				return rocketmqRule.confFunc(rc)
+			}
+			if strings.Contains(cmdline, "nacos") {
+				return nacosRule.confFunc(rc)
+			}
+			if strings.Contains(cmdline, "elasticsearch") {
+				return elasticsearchRule.confFunc(rc)
+			}
+			if strings.Contains(cmdline, "jenkins") {
+				return jenkinsRule.confFunc(rc)
+			}
+			if strings.Contains(cmdline, "logstash") {
+				return logstashRule.confFunc(rc)
+			}
+			return ""
+		},
+	}
+	// General Python Rule
+	pythonRule = &AppRule{
+		name: "python_app",
+		confFunc: func(rc RuleContext) string {
+			cmdline := rc.cmdline
+			if strings.Contains(cmdline, "manage.py") || strings.Contains(cmdline, "django") {
+				return djangoRule.confFunc(rc)
+			}
+			if strings.Contains(cmdline, "ansible") {
+				return ansibleRule.confFunc(rc)
+			}
+			if strings.Contains(cmdline, "salt") {
+				return saltstackRule.confFunc(rc)
+			}
+			if strings.Contains(cmdline, "jumpserver") {
+				return jumpserverRule.confFunc(rc)
+			}
+			return ""
+		},
+	}
+	// General Node.js Rule
+	nodeRule = &AppRule{
+		name: "node_app",
+		confFunc: func(rc RuleContext) string {
+			return ""
+		},
+		matchFunc: func(rc RuleContext) ([]byte, *App) {
+			cmdline := rc.cmdline
+			if strings.Contains(cmdline, "kibana") {
+				return &[]byte{}, &App{Name: "kibana", Type: "web_service", Matched: true}
+			}
+			return nil, nil
+		},
+	}
+	// Independent binary rules
+	ansibleRule = &AppRule{
+		name:  "ansible",
+		_type: "devops",
+		confFunc: func(rc RuleContext) string {
+			return ""
+		},
+	}
+	saltstackRule = &AppRule{
+		name:  "saltstack",
+		_type: "devops",
+		confFunc: func(rc RuleContext) string {
+			return ""
+		},
+	}
+	jumpserverRule = &AppRule{
+		name:  "jumpserver",
+		_type: "devops",
+		confFunc: func(rc RuleContext) string {
+			return ""
+		},
+	}
+	tidbRule = &AppRule{
+		name:  "tidb",
+		_type: "database",
+		confFunc: func(rc RuleContext) string {
+			return ""
+		},
+	}
+	zabbixRule = &AppRule{
+		name:  "zabbix",
+		_type: "devops",
+		confFunc: func(rc RuleContext) string {
+			return ""
+		},
+	}
+	rancherRule = &AppRule{
+		name:  "rancher",
+		_type: "devops",
+		confFunc: func(rc RuleContext) string {
+			return ""
+		},
+	}
+	// Independent binary rules for components not running on JVM/Python
+	dorisBeRule = &AppRule{
+		name:  "doris",
+		_type: "database",
+		confFunc: func(rc RuleContext) string {
+			return ""
+		},
+	}
+	jumpserverKokoRule = &AppRule{
+		name:  "jumpserver",
+		_type: "devops",
+		confFunc: func(rc RuleContext) string {
+			return ""
+		},
+	}
+)
 
 func (r *AppRule) GenerateApp(rc RuleContext) ([]byte, *App) {
+	// Hook to dispatch java rule
+	if r.name == "java_app" {
+		cmdline := rc.cmdline
+		if strings.Contains(cmdline, "kafka") {
+			return kafkaRule.GenerateApp(rc)
+		}
+		if strings.Contains(cmdline, "rocketmq") {
+			return rocketmqRule.GenerateApp(rc)
+		}
+		if strings.Contains(cmdline, "nacos") {
+			return nacosRule.GenerateApp(rc)
+		}
+		if strings.Contains(cmdline, "elasticsearch") {
+			return elasticsearchRule.GenerateApp(rc)
+		}
+		if strings.Contains(cmdline, "jenkins") {
+			return jenkinsRule.GenerateApp(rc)
+		}
+		if strings.Contains(cmdline, "logstash") {
+			return logstashRule.GenerateApp(rc)
+		}
+		if strings.Contains(cmdline, "hadoop") {
+			return &[]byte{}, &App{Name: "hadoop", Type: "big_data", Matched: true}
+		}
+		if strings.Contains(cmdline, "druid") {
+			return &[]byte{}, &App{Name: "druid", Type: "database", Matched: true}
+		}
+		if strings.Contains(cmdline, "canal") {
+			return &[]byte{}, &App{Name: "canal", Type: "middleware", Matched: true}
+		}
+		if strings.Contains(cmdline, "doris") {
+			return &[]byte{}, &App{Name: "doris", Type: "database", Matched: true}
+		}
+		if strings.Contains(cmdline, "nexus") {
+			return &[]byte{}, &App{Name: "nexus", Type: "devops", Matched: true}
+		}
+		if strings.Contains(cmdline, "ruoyi") {
+			return &[]byte{}, &App{Name: "ruoyi", Type: "web_service", Matched: true}
+		}
+		if strings.Contains(cmdline, "skywalking") {
+			return &[]byte{}, &App{Name: "skywalking", Type: "devops", Matched: true}
+		}
+		if strings.Contains(cmdline, "xxl-job") {
+			return &[]byte{}, &App{Name: "xxl-job", Type: "devops", Matched: true}
+		}
+		if strings.Contains(cmdline, "ambari") {
+			return &[]byte{}, &App{Name: "ambari", Type: "devops", Matched: true}
+		}
+		if strings.Contains(cmdline, "logbase") {
+			return &[]byte{}, &App{Name: "logbase", Type: "big_data", Matched: true}
+		}
+	}
+	// Hook to dispatch python rule
+	if r.name == "python_app" {
+		cmdline := rc.cmdline
+		if strings.Contains(cmdline, "manage.py") || strings.Contains(cmdline, "django") {
+			return djangoRule.GenerateApp(rc)
+		}
+		if strings.Contains(cmdline, "ansible") {
+			return &[]byte{}, &App{Name: "ansible", Type: "devops", Matched: true}
+		}
+		if strings.Contains(cmdline, "salt") {
+			return &[]byte{}, &App{Name: "saltstack", Type: "devops", Matched: true}
+		}
+		if strings.Contains(cmdline, "jumpserver") {
+			return &[]byte{}, &App{Name: "jumpserver", Type: "devops", Matched: true}
+		}
+		if strings.Contains(cmdline, "archery") {
+			return &[]byte{}, &App{Name: "archery", Type: "devops", Matched: true}
+		}
+	}
+
 	var output []byte
 	var app *App
 	if r.sub != nil {

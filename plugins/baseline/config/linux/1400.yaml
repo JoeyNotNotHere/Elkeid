@@ -240,26 +240,7 @@ check_list:
         - type: "file_line_check"
           param:
             - "/etc/ssh/sshd_config"
-          filter: '^\s*LogLevel\s+(.*)'
-          result: 'INFO'
-  -
-    check_id: 13
-    type: "SSH Configure"
-    title: "Ensure SSH Protocol is set to 2"
-    description: "SSH supports two different and incompatible protocols: SSH1 and SSH2. SSH1 was the original protocol and was subject to security issues. SSH2 is more advanced and secure."
-    solution: "Edit the /etc/ssh/sshd_config file to set the parameter as follows: Protocol 2"
-    security: "high"
-    type_cn: "SSH检测"
-    title_cn: "确保ssh协议设置为2"
-    description_cn: "SSH 支持两种不同且不兼容的协议：SSH1 和 SSH2。SSH1 是原始协议，存在安全问题。SSH2 更先进、更安全。"
-    solution_cn: "编辑 /etc/ssh/sshd_config 文件以按如下方式设置参数:\nProtocol 2"
-    check:
-      rules:
-        - type: "file_line_check"
-          param:
-            - "/etc/ssh/sshd_config"
-          filter: 'Protocol\s*\t*(.*)'
-          result: '2'
+          result: 'LogLevel\s*\t*INFO'
   -
     check_id: 14
     type: "security audit"
@@ -355,3 +336,115 @@ check_list:
           param:
             - '/etc/hosts.deny'
             - "644"
+  -
+    check_id: 5001
+    type: "WeakPassword"
+    title: "Redis Weak Password Check"
+    description: "Check if Redis is configured with a weak or default password."
+    solution: "Set a strong password in redis.conf"
+    security: "high"
+    type_cn: "弱口令"
+    title_cn: "Redis 弱口令检测"
+    description_cn: "检查 Redis 是否配置了弱口令或默认口令。"
+    solution_cn: "在 redis.conf 中设置强密码。"
+    check:
+      rules:
+        - type: "func_check"
+          param:
+            - "check_redis_weak_password"
+  -
+    check_id: 5002
+    type: "WeakPassword"
+    title: "MySQL Weak Password Check"
+    description: "Check if MySQL is configured with a weak or default password."
+    solution: "Set a strong password in my.cnf"
+    security: "high"
+    type_cn: "弱口令"
+    title_cn: "MySQL 弱口令检测"
+    description_cn: "检查 MySQL 是否配置了弱口令或默认口令。"
+    solution_cn: "在 my.cnf 中设置强密码。"
+    check:
+      rules:
+        - type: "func_check"
+          param:
+            - "check_mysql_weak_password"
+  -
+    check_id: 5003
+    type: "WeakPassword"
+    title: "PostgreSQL Weak Password Check"
+    description: "Check if PostgreSQL allows trust authentication."
+    solution: "Disable trust authentication in pg_hba.conf"
+    security: "high"
+    type_cn: "弱口令"
+    title_cn: "PostgreSQL 弱口令检测"
+    description_cn: "检查 PostgreSQL 是否允许 trust 认证。"
+    solution_cn: "在 pg_hba.conf 中禁用 trust 认证。"
+    check:
+      rules:
+        - type: "func_check"
+          param:
+            - "check_postgres_weak_password"
+  -
+    check_id: 5004
+    type: "WeakPassword"
+    title: "Nacos Weak Password Check"
+    description: "Check if Nacos is configured with weak passwords."
+    solution: "Set strong passwords and disable default accounts."
+    security: "high"
+    type_cn: "弱口令"
+    title_cn: "Nacos 弱口令检测"
+    description_cn: "检查 Nacos 是否配置了弱口令或默认口令。"
+    solution_cn: "设置强密码并禁用默认账户。"
+    check:
+      rules:
+        - type: "func_check"
+          param:
+            - "check_nacos_weak_password"
+  -
+    check_id: 5005
+    type: "AppConfig"
+    title: "Nacos Configuration Check"
+    description: "Check Nacos security configuration."
+    solution: "Enable authentication and set secure keys."
+    security: "high"
+    type_cn: "应用配置"
+    title_cn: "Nacos 安全配置检测"
+    description_cn: "检查 Nacos 安全配置（鉴权、密钥等）。"
+    solution_cn: "启用鉴权并设置安全密钥。"
+    check:
+      rules:
+        - type: "func_check"
+          param:
+            - "check_nacos_config"
+  -
+    check_id: 5006
+    type: "AppConfig"
+    title: "Archery Configuration Check"
+    description: "Check Archery security configuration."
+    solution: "Disable debug mode and set secure keys."
+    security: "high"
+    type_cn: "应用配置"
+    title_cn: "Archery 安全配置检测"
+    description_cn: "检查 Archery 安全配置（Debug模式、密钥等）。"
+    solution_cn: "禁用 Debug 模式并设置安全密钥。"
+    check:
+      rules:
+        - type: "func_check"
+          param:
+            - "check_archery_config"
+  -
+    check_id: 5007
+    type: "AppConfig"
+    title: "Xxl-job Configuration Check"
+    description: "Check Xxl-job security configuration."
+    solution: "Set secure access token and passwords."
+    security: "high"
+    type_cn: "应用配置"
+    title_cn: "Xxl-job 安全配置检测"
+    description_cn: "检查 Xxl-job 安全配置（Token、密码等）。"
+    solution_cn: "设置安全 Access Token 和密码。"
+    check:
+      rules:
+        - type: "func_check"
+          param:
+            - "check_xxl_job_config"

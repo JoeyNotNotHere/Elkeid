@@ -1,0 +1,255 @@
+资产指纹识别：
+
+目标说明
+通过 HIDS Agent 在主机及容器内，基于进程与本地文件信息，对已运行的应用组件进行基础指纹识别与版本采集，为后续漏洞扫描提供可靠输入数据。
+识别范围（一期）
+Java 应用第三方组件（Jar 包）
+仅识别实际存在于磁盘上的 Jar 文件
+重点覆盖常见高风险组件：
+fastjson
+log4j / logback
+commons-*
+识别内容：组件名称、版本号、所在路径
+基础服务类型识别
+基于进程名称识别服务类型（不深度解析配置）：
+nginx
+redis
+mysqld
+java
+仅用于服务类型标记，不强制要求精确版本
+基础应用软件识别
+httpd
+Nginx
+Redis
+Rabbitmq
+Grafana
+Mysql
+Postgresql
+Mongodb
+etcd
+Prometheus
+Sqlserver
+Dockerd
+Containerd
+Kubelet
+Logstash
+Ansible
+Apache apisix
+Apache kafka
+Apache rocketmq
+Archery
+Canal
+Django
+Doris
+Druid
+Hadoop
+Jenkins
+Jumpserver
+Kibana
+Logbase
+Nacos
+Nexus
+Rancher
+Ruoyi
+Saltstack
+Skywalking
+Tidb
+Xxl-job
+Zabbix
+ambari
+
+
+实现方式
+进程发现
+Agent 周期性扫描系统进程列表
+识别目标进程（如 java / redis-server / nginx）
+记录 PID、启动命令、运行用户
+Jar 文件扫描
+针对 Java 进程：
+从启动参数中提取应用目录（如 -jar / -classpath）
+扫描应用目录及 lib 子目录中的 Jar 文件
+版本识别方式（按优先级）：
+Jar 文件名解析（如 fastjson-1.2.76.jar）
+Jar 元信息（MANIFEST.MF / pom.properties，如存在）
+数据输出
+指纹数据统一上报至 HIDS Server
+每条指纹需至少包含：
+主机 ID / 容器 ID（如有）
+组件名称
+版本号（无法识别则为空）
+文件路径
+采集时间
+
+应用服务漏洞扫描
+目标说明
+基于资产指纹识别结果，对主机及容器内已识别的应用组件进行版本级漏洞匹配，发现存在已知高危漏洞的组件实例，为漏洞治理提供基础数据支撑。
+扫描对象（一期）
+Java 应用第三方组件（Jar 包）
+来源：资产指纹识别模块输出的 Jar 组件清单
+重点覆盖常见高风险组件：
+fastjson
+log4j / logback
+commons-*
+jackson
+基础服务（仅版本可明确识别的场景）
+如 nginx、redis、mysql（仅在可获取明确版本信息时参与扫描）
+实现方式
+组件版本获取
+直接复用资产指纹识别结果中的：
+组件名称
+版本号
+文件路径
+不额外进行目录扫描或二次解析
+漏洞规则匹配
+Server 侧维护组件漏洞规则库（组件名 + 版本范围）
+Agent 上报组件信息后，由 Server 完成漏洞匹配
+输出组件是否命中漏洞及对应漏洞信息
+扫描触发机制
+周期性扫描（如每日或定时执行）
+当检测到以下变化时触发增量扫描：
+新组件被识别
+组件版本发生变化
+容器新建或重启
+结果输出
+扫描结果统一上报至 HIDS Server
+每条漏洞结果需包含：
+主机 / 容器标识
+组件名称
+组件版本
+漏洞标识（如 CVE 或内部规则 ID）
+风险等级（高 / 中 / 低）
+
+弱口令扫描
+目标说明
+通过 HIDS Agent 在主机及容器内识别应用服务的认证配置情况，发现未配置密码、使用默认口令或命中弱口令规则的服务实例，降低基础服务被未授权访问的风险。
+扫描对象（一期）
+支持的服务类型
+Redis
+MySQL
+PostgreSQL
+nacos
+（后续可扩展）
+部署形态
+主机部署服务
+容器内运行服务
+实现方式
+服务发现
+Agent 通过进程扫描识别目标服务进程：
+redis-server
+mysqld
+postgres
+nacos
+获取进程启动参数及关联配置文件路径
+配置文件解析
+仅读取本地配置文件中的认证相关配置项：
+Redis：requirepass
+MySQL / PostgreSQL：认证相关配置
+MySQL：
+/etc/my.cnf
+/etc/mysql/my.cnf
+/var/lib/my.cnf
+/var/lib/mysql/my.cnf
+PostgreSQL：
+/etc/postgresql/{version}/main/pg_hba.conf
+/etc/postgresql/{version}/main/postgresql.conf
+/var/lib/postgresql/{version}/main/pg_hba.conf
+/var/lib/postgresql/{version}/main/postgresql.conf
+nacos：
+${nacos.home}/conf/mysql-schema.sql
+${nacos.home}/conf/derby-schema.sql
+不进行登录尝试或口令验证
+判断逻辑
+无密码风险
+配置文件中未设置认证参数
+→ 判定为【高危｜无密码】
+默认口令风险
+配置命中服务默认口令规则
+→ 判定为【高危｜默认口令】
+弱口令风险
+配置中的密码命中弱口令规则集
+弱口令规则来源：
+内置基础弱口令列表
+支持从 Server 下发自定义弱口令规则（如外部泄漏口令）
+扫描触发机制
+周期性扫描（如每日执行）
+当检测到以下变化时触发：
+服务首次发现
+配置文件发生变更
+容器新建或重启
+结果输出
+扫描结果统一上报至 HIDS Server
+每条风险结果需包含：
+主机 / 容器标识
+服务类型
+风险类型（无密码 / 默认口令 / 弱口令）
+风险等级（高 / 中）
+修复建议（如开启认证、修改密码）
+
+应用安全基线扫描
+目标说明
+读取应用服务安全配置，确认是否有存在安全风险的配置。
+
+支持扫描服务
+Nacos
+archery
+xxljob
+
+实现方式
+读取本地文件配置项：
+Nacos
+文件路径一：${nacos.home}/conf/application.properties
+参数：nacos.core.auth.enabled 值是否为true
+对应docker镜像环境变量：NACOS_AUTH_ENABLE
+说明：nacos客户端是否开启鉴权
+
+参数：nacos.core.auth.admin.enabled 值是否为true
+对应docker镜像环境变量：NACOS_AUTH_ADMIN_ENABLE
+说明：是否开启Nacos Admin API访问鉴权功能
+
+参数：nacos.core.auth.console.enabled 值是否为true
+对应docker镜像环境变量：NACOS_AUTH_CONSOLE_ENABLE
+说明：是否开启nacos控制台访问鉴权
+
+参数：nacos.core.auth.enable.userAgentAuthWhite 值是否为false
+说明：是否关闭使用user-agent判断服务端请求并放行鉴权的功能
+
+参数：nacos.core.auth.plugin.nacos.token.secret.key
+说明：是否使用默认鉴权插件用于生成用户登陆临时accessToken所使用的默认密钥，
+默认密钥是：SecretKey012345678901234567890123456789012345678901234567890123456789
+
+参数：nacos.core.auth.server.identity.key
+对应docker镜像环境变量：NACOS_AUTH_IDENTITY_KEY
+说明：2.2.1版本以后没有默认值，之前版本的默认值是serverIdentity
+
+参数：nacos.core.auth.server.identity.value
+对应docker镜像环境变量：NACOS_AUTH_IDENTITY_VALUE
+说明：2.2.1版本以后没有默认值，之前版本的默认值是security
+
+参数：management.endpoints.web.exposure.include
+说明：是否配置不为*，如果是*标识所有actuator端点都被暴露了
+
+参数：management.endpoints.web.exposure.exclude
+说明：是否配置为*，表示不允许所有端点暴露。
+
+参数：nacos.core.auth.default.token.secret.key
+说明：1.2.0 ~ 2.0.4版本的配置，用于生成JWT令牌的密钥，检查是否是默认密钥，
+默认密钥是：SecretKey012345678901234567890123456789012345678901234567890123456789
+
+文件路径二：${nacos.home}/conf/mysql-schema.sql
+${nacos.home}/conf/derby-schema.sql
+说明：检查是否存在默认密码nacos/nacos
+archery
+文件路径：${archery.home}/settings.py
+参数：SECRET_KEY
+说明：是否为默认值
+默认值：SECRET_KEY=(str, "hfusaf2m4ot#7)fkw#di2bu6(cv0@opwmafx5n#6=3d%x^hpl6")
+
+参数：Debug
+说明：是否配置为false，配置为true存在风险需要关闭debug模式
+xxljob
+文件路径：/xxl-job/xxl-job-admin/src/main/resources/application.properties
+参数：xxl.job.accessToken
+说明：检查是否启用认证，并且值非空且非弱密码
+
+参数：spring.datasource.password
+说明：检查调度中心JDBC链接是否非空且非弱密码

@@ -1,0 +1,234 @@
+1. 背景与目标
+1.1 背景
+随着 HIDS 在主机及容器环境中的持续部署，现有以进程、文件、内核行为为主的检测能力，已无法满足应用层安全治理需求，主要问题包括：
+资产不清：无法准确识别主机与容器内运行的应用类型及其版本（如 Java 中间件）。
+漏洞盲区：应用漏洞扫描缺乏可靠、结构化的资产输入（如 Jar 包漏报和路径缺失）。
+基线缺失：弱口令与应用安全配置检查能力缺失，需要对相关敏感应用进行基线检查。
+1.2 目标
+在 不引入侵入式扫描、不进行网络登录尝试 的前提下，通过 HIDS Agent 本地采集能力，实现：
+全量指纹识别：覆盖进程、应用软件（Nginx/Redis等）、应用组件（Jar包）。
+精准漏洞输入：为漏洞扫描提供带路径的组件信息。
+统一基线框架：将弱口令与应用配置检查纳入 Baseline 模块统一管理。
+2. 模块总体架构
+模块
+职责
+组件归属
+资产指纹识别
+
+采集进程、应用软件、组件（Jar）指纹
+plugins/collector
+应用漏洞扫描
+基于指纹进行 CVE/CNVD 漏洞匹配
+HIDS Server (复用指纹数据)
+弱口令扫描
+
+检查应用配置文件中的密码强度
+plugins/baseline (新增检查项)
+应用安全基线
+检查应用配置文件的安全选项
+plugins/baseline (新增检查项)
+3. 资产指纹识别
+3.1 模块归属
+组件：plugins/collector
+涉及接口：
+DescribeProcess (进程发现)
+DescribeSoftware (组件/Jar包)
+DescribeApp (应用识别)
+3.2 现状与问题
+Software (Jar)：仅识别了/proc/[pid]/fd下的jar，未扫描依赖目录。
+App (应用)：依赖 comm 字段匹配，无法区分 Java/Python 等通用运行时应用（如无法区分 Tomcat 与 Jenkins）。
+3.3 实现方案
+3.3.1 Jar 包扫描增强（DescribeSoftware）
+目标：识别 Jar 包并采集绝对路径。
+扫描策略：
+读取进程 /proc/[pid]/cmdline。
+解析启动参数 -jar, -cp, -classpath 中的路径。
+对提取路径进行递归扫描（最大深度 3，仅 .jar）。
+最大扫描数量确定 避免性能影响
+版本识别优先级：
+META-INF/MANIFEST.MF
+pom.properties
+文件名解析 (e.g., fastjson-1.2.76.jar)
+数据结构变更：
+DescribeSoftware 接口需新增 path 字段。
+3.3.2 应用识别规则扩展（DescribeApp）
+目标：基于特征识别具体业务应用（如 Nacos, Redis）。
+识别逻辑 (Agent 内部)：
+输入：进程 cmdline, exe, comm。
+匹配：使用正则库匹配特征（如 cmdline 包含 kafka.Kafka）。
+输出：
+Name: Nacos
+Version: 2.0.3 (尝试 -v 或解析 jar 名)
+Conf: /home/nacos/conf/application.properties (从参数解析)
+Type: 标记为 app
+新增识别规则 (覆盖需求文档列表)：
+Java类：Logstash, Kafka, RocketMQ, Nacos, Jenkins, Elasticsearch...
+原生类：Nginx, Redis, MySQL, Postgres...
+Python/Go类：Django, Etcd, Prometheus...
+数据结构兼容性：
+无需修改 Server 端 DescribeApp 结构。
+现有的 DescribeAppRespItem 已包含 Name, Version, Conf, Exe，完全满足需求。
+4. 应用服务漏洞扫描
+4.1 模块归属
+数据源：plugins/collector (依赖上述指纹识别结果)。
+分析引擎：HIDS HUB。
+4.2 实现方案
+无需 Agent 额外扫描。
+Server 端逻辑：soc配置对应的规则
+监听 DescribeSoftware (Jar) 和 DescribeApp (应用) 的数据上报。
+提取 Name 和 Version。
+与漏洞库 (CVE/CNVD) 进行版本比对。
+生成漏洞告警（包含文件路径，方便用户修复）。
+5. 弱口令扫描
+5.1 模块归属
+组件：plugins/baseline (基线模块)
+原因：弱口令检查本质上是对配置文件的“合规性检测”，产出的是“风险项”，符合基线模块的定义。
+5.2 现状与问题
+目前baseline中主要是通过yaml中进行规则配置的形式 定义检查内容
+check:
+  rules:
+    - type: "file_line_check"
+      param:
+        - "/etc/login.defs"
+      filter: '\s*\t*PASS_MAX_DAYS\s*\t*(\d+)'
+      result: '$(<=)90'
+其中check type支持以下类型
+类型
+功能描述
+典型用途
+file_line_check
+核心能力。按行读取文件，正则匹配内容
+检查配置项值（如 PASS_MAX_DAYS）。
+command_check
+执行 Shell 命令并检查输出。
+检查服务状态（systemctl status）。
+file_permission
+检查文件权限位（chmod）。
+确保 /etc/shadow 权限为 400。
+file_user_group
+检查文件所有者/所属组。
+ 确保关键文件属于 root。
+if_file_exist
+简单判断文件是否存在。
+检查是否遗留了临时文件。
+file_md5_check
+检查文件 MD5 哈希值。
+完整性校验。
+func_check
+扩展能力。调用 Go 硬编码的特殊函数
+处理复杂逻辑（如本次的应用弱密码）。
+对于如redis mysql这种在主机上不一定存在的应用配置文件检查 不能直接用file_line_check 而应该使用func_check 通过定义不同应用的弱口令检查函数来实现该需求
+5.2 实现方案
+5.2.1 弱口令字典管理 (Server 端)
+现状：目前的弱口令为代码中的配置文件 无法动态新增
+功能：支持用户弱口令的在线补充。
+实现：
+新增接口 UpdateWeakPassDict / GetWeakPassDict。
+支持上传 txt 文件或文本编辑。
+新增的弱口令存于mongodb中 然后通过task下发同步弱口令字典任务 至plugins/baseline组件
+Baseline插件 收到同步弱口令字典任务后 动态加载数据库的弱口令 维护在内存中 用于后续逻辑判断
+5.2.3 应用弱口令逻辑 (Agent 端)
+触发：baseline的周期型运行 或者baseline配置文件更改
+实现：基于func_check + param实现不同应用的检查函数
+检查函数逻辑：
+扫描/proc 判断是否存在目标应用。
+根据/proc/[pid]/cmdline 查询配置文件 如果没有则使用默认配置文件
+提取认证字段和密码 (如 requirepass, masterauth)。
+判断：
+无配置文件：配置文件不存 或者不可读的情况则跳过风险上报
+无密码：字段不存在或为空 -> High Risk
+默认口令：匹配应用默认值 (如 Nacos 的 nacos/nacos) -> High Risk
+弱口令：匹配下发的字典 (如 123456) -> Medium Risk
+上报：调用 SendBaselineData 接口上报风险。
+展示：目前的基线检查中有展示页面
+上线后修改baseline的配置
+风险点：
+目前要求进行弱口令扫描的四款应用 其中mysql和postgre的密码不一定能在配置文件中拿到
+配置文件不一定能拿到 有可能没有使用配置文件启动 或者容器情况比较复杂
+
+6. 应用安全基线扫描
+6.1 模块归属
+组件：plugins/baseline
+6.2 实现方案
+实现方案和5.2中的一致 需求有部分重叠 可以整合为应用维度的基线检查
+触发：baseline的周期型运行 或者baseline配置文件更改
+实现：基于func_check + param实现不同应用的检查函数 总体实现以下5个应用的func_check
+Mysql
+Postgre
+Redis
+Nacos
+Archery
+Xxl-job
+具体检查函数逻辑：
+应用
+检查项 (Check ID)
+配置文件
+检查逻辑 (伪代码)
+Nacos
+
+多个配置项检查
+
+${nacos.home}/conf/application.properties
+需求文档中10个配置项目的检查
+Nacos
+
+Token 密钥安全性
+
+${nacos.home}/conf/mysql-schema.sql
+检查是否存在默认密码nacos/nacos
+
+Archery
+默认密码检查
+
+Debug 模式关闭
+
+${archery.home}/settings.py
+
+SECRET_KEY=(str, "hfusaf2m4ot#7)fkw#di2bu6(cv0@opwmafx5n#6=3d%x^hpl6")
+
+Debug == False
+XXL-Job
+AccessToken 非空
+
+弱密码检查
+/xxl-job/xxl-job-admin/src/main/resources/application.properties
+xxl.job.accessToken是否为空或者弱密码
+
+spring.datasource.password 是否为空或者弱密码
+
+7. 接口改动汇总
+接口
+改动点
+说明
+DescribeSoftware
+Response 新增 path
+用于返回 Jar 包物理路径
+UpdateWeakPassDict
+新增接口
+用于管理弱口令字典
+8. 人力评估
+任务模块
+详细内容
+预估人天
+Agent 指纹采集
+Jar 包递归扫描、路径提取、去重逻辑
+2
+Agent 应用识别
+实现 30+ 种应用的正则匹配规则、配置路径解析
+3
+Server 字典管理
+弱口令字典的上传、存储、下发接口
+1
+Agent 弱口令扫描
+
+Redis/MySQL/PostgreSQL/Nacos 配置解析与口令匹配
+2.5
+Agent 应用基线扫描
+Nacos/Archery/XXLJob 等应用的特定配置检查逻辑实现
+2.5
+联调与测试
+端到端验证、误报测试
+2
+合计
+
+13 人天

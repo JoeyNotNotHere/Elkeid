@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 )
 
 
@@ -32,8 +33,9 @@ type RetCheckInfo struct {
 }
 
 type TaskData struct {
-	BaselineId  int   `json:"baseline_id"`
-	CheckIdList []int `json:"check_id_list"`
+	BaselineId    int      `json:"baseline_id"`
+	CheckIdList   []int    `json:"check_id_list"`
+	WeakPasswords []string `json:"weak_passwords"`
 }
 
 var (
@@ -60,6 +62,16 @@ func getBaselineConfigData(baselineId int) (baselineInfo BaselineInfo, err error
 
 // AnalysisBaseline start baseline task
 func AnalysisBaseline(taskData TaskData) (retBaselineInfo RetBaselineInfo, err error) {
+
+	// Update dictionary if present
+	if len(taskData.WeakPasswords) > 0 {
+		UpdateWeakPassDict(taskData.WeakPasswords)
+		// If no baseline ID, maybe just update?
+		if taskData.BaselineId == 0 {
+			retBaselineInfo.Status = BaselineStatusSuccess
+			return retBaselineInfo, nil
+		}
+	}
 
 	// analysis params
 	baselineId := taskData.BaselineId
@@ -98,18 +110,28 @@ func AnalysisBaseline(taskData TaskData) (retBaselineInfo RetBaselineInfo, err e
 		retcheckInfo.Solution = checkInfo.Solution
 		ifPass, err := AnalysisRule(checkInfo.Check)
 		if err != nil {
-			retcheckInfo.Result = ErrorCode
-			errCode, _ := strconv.Atoi(err.Error()[:2])
-			switch errCode {
-			case ErrorFile:
-				retcheckInfo.Result = ErrorFile
-				retcheckInfo.Msg = err.Error()[3:]
-			case ErrorConfigWrite:
-				retcheckInfo.Result = ErrorConfigWrite
-				retcheckInfo.Msg = err.Error()[3:]
-			default:
-				retcheckInfo.Result = ErrorCode
+			// Check if it's a risk report
+			if strings.Contains(err.Error(), "Risk") {
+				retcheckInfo.Result = FailCode
 				retcheckInfo.Msg = err.Error()
+			} else {
+				retcheckInfo.Result = ErrorCode
+				if len(err.Error()) > 2 {
+					errCode, _ := strconv.Atoi(err.Error()[:2])
+					switch errCode {
+					case ErrorFile:
+						retcheckInfo.Result = ErrorFile
+						retcheckInfo.Msg = err.Error()[3:]
+					case ErrorConfigWrite:
+						retcheckInfo.Result = ErrorConfigWrite
+						retcheckInfo.Msg = err.Error()[3:]
+					default:
+						retcheckInfo.Result = ErrorCode
+						retcheckInfo.Msg = err.Error()
+					}
+				} else {
+					retcheckInfo.Msg = err.Error()
+				}
 			}
 		} else {
 			if ifPass {

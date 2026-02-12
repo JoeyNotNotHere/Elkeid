@@ -5,10 +5,11 @@ import (
 	"baseline/src/check"
 	"baseline/src/linux"
 	"encoding/json"
-	"github.com/bytedance/plugins"
 	"math/rand"
 	"runtime"
 	"time"
+
+	"github.com/bytedance/plugins"
 )
 
 var (

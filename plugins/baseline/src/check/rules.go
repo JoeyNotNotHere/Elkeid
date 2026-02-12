@@ -224,9 +224,27 @@ func FuncCheck(param []string) (result interface{}, err error) {
 	}
 
 	var funcRes bool
+	var checkErr error
 	switch param[0] {
 	case "Ensure no duplicate user names exist":
 		funcRes = IfDuplicateUser()
+	case "check_redis_weak_password":
+		funcRes, checkErr = CheckRedisWeakPassword()
+	case "check_mysql_weak_password":
+		funcRes, checkErr = CheckMysqlWeakPassword()
+	case "check_postgres_weak_password":
+		funcRes, checkErr = CheckPostgresWeakPassword()
+	case "check_nacos_weak_password":
+		funcRes, checkErr = CheckNacosWeakPassword()
+	case "check_nacos_config":
+		funcRes, checkErr = CheckNacosConfig()
+	case "check_archery_config":
+		funcRes, checkErr = CheckArcheryConfig()
+	case "check_xxl_job_config":
+		funcRes, checkErr = CheckXxlJobConfig()
+	}
+	if checkErr != nil {
+		return false, checkErr // Return false with risk description
 	}
 	return funcRes, nil
 }
