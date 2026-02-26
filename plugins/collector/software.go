@@ -22,6 +22,7 @@ import (
 
 const (
 	MaxRecursionLevel = 3
+	MaxJarPerProcess  = 500
 )
 
 var (
@@ -38,9 +39,14 @@ func parseClasspath(cmdline string, cwd string) []string {
 				path = filepath.Join(cwd, path)
 			}
 			paths = append(paths, path)
+			libDir := filepath.Join(filepath.Dir(path), "lib")
+			paths = append(paths, libDir)
 		} else if (part == "-cp" || part == "-classpath") && i+1 < len(parts) {
 			cp := parts[i+1]
 			for _, p := range strings.Split(cp, ":") {
+				if strings.HasSuffix(p, "/*") {
+					p = strings.TrimSuffix(p, "/*")
+				}
 				if !filepath.IsAbs(p) {
 					p = filepath.Join(cwd, p)
 				}
@@ -122,28 +128,28 @@ func findJar(c *plugins.Client, rec *plugins.Record, r *zip.Reader, n string) {
 			rec.Timestamp = time.Now().Unix()
 			c.SendRecord(rec)
 		}
-		// 补全jar包版本
 		if version == "" && f.Name == "META-INF/MANIFEST.MF" {
-			if r, err := f.Open(); err == nil {
-				for sc := bufio.NewScanner(r); sc.Scan(); {
+			if rc, err := f.Open(); err == nil {
+				sc := bufio.NewScanner(rc)
+				for sc.Scan() {
 					if strings.HasPrefix(sc.Text(), "Implementation-Version:") {
 						version = strings.TrimSpace(sc.Text()[len("Implementation-Version:"):])
 						break
 					}
-					r.Close()
 				}
+				rc.Close()
 			}
 		}
-		// pom.properties
 		if version == "" && strings.HasSuffix(f.Name, "pom.properties") {
-			if r, err := f.Open(); err == nil {
-				for sc := bufio.NewScanner(r); sc.Scan(); {
+			if rc, err := f.Open(); err == nil {
+				sc := bufio.NewScanner(rc)
+				for sc.Scan() {
 					if strings.HasPrefix(sc.Text(), "version=") {
 						version = strings.TrimSpace(sc.Text()[len("version="):])
 						break
 					}
-					r.Close()
 				}
+				rc.Close()
 			}
 		}
 	})
@@ -327,74 +333,63 @@ func (h *SoftwareHandler) Handle(c *plugins.Client, cache *engine.Cache, seq str
 			}
 			if fs, err := p.Fds(); err == nil {
 				set := mapset.NewSet()
-				// Scan open file descriptors
+				jarCount := 0
+				procRoot := filepath.Join("/proc", p.Pid(), "root")
+
+				scanJar := func(jarPath, reportPath string) {
+					if jarCount >= MaxJarPerProcess {
+						return
+					}
+					if set.Contains(reportPath) {
+						return
+					}
+					base := filepath.Base(reportPath)
+					if base != "rt.jar" && (strings.Contains(reportPath, "jdk") || strings.Contains(reportPath, "jre")) {
+						return
+					}
+					if r, err := zip.OpenReader(jarPath); err == nil {
+						findJar(c, rec, r, reportPath)
+						r.Close()
+						jarCount++
+					}
+					set.Add(reportPath)
+				}
+
 				for _, fn := range fs {
 					if filepath.Ext(fn) == ".jar" {
-						if set.Contains(fn) ||
-							(filepath.Base(fn) != "rt.jar" &&
-								(strings.Contains(fn, "jdk") || strings.Contains(fn, "jre"))) {
-							continue
-						}
-						if r, err := zip.OpenReader(filepath.Join("/proc", p.Pid(), "root", fn)); err == nil {
-							findJar(c, rec, r, fn)
-							r.Close()
-						}
-						set.Add(fn)
+						scanJar(filepath.Join(procRoot, fn), fn)
 					}
 				}
 
-				// Scan paths from cmdline
 				if cwd, err := p.Cwd(); err == nil {
 					paths := parseClasspath(cmdline, cwd)
 					for _, path := range paths {
-						// Only process .jar files
+						if jarCount >= MaxJarPerProcess {
+							break
+						}
 						if filepath.Ext(path) == ".jar" {
-							if set.Contains(path) || (filepath.Base(path) != "rt.jar" && (strings.Contains(path, "jdk") || strings.Contains(path, "jre"))) {
-								continue
-							}
-							rootPath := filepath.Join("/proc", p.Pid(), "root", path)
-							if r, err := zip.OpenReader(rootPath); err == nil {
-								findJar(c, rec, r, path)
-								r.Close()
-							}
-							set.Add(path)
+							scanJar(filepath.Join(procRoot, path), path)
 						} else {
-							// Recursive scan for directories
-							rootPath := filepath.Join("/proc", p.Pid(), "root", path)
-							// Check if directory exists
+							rootPath := filepath.Join(procRoot, path)
 							if fi, err := os.Stat(rootPath); err == nil && fi.IsDir() {
 								godirwalk.Walk(rootPath, &godirwalk.Options{
 									Callback: func(osPathname string, directoryEntry *godirwalk.Dirent) error {
+										if jarCount >= MaxJarPerProcess {
+											return filepath.SkipDir
+										}
 										if directoryEntry.IsDir() {
 											if rel, err := filepath.Rel(rootPath, osPathname); err == nil {
-												// Check depth
 												if strings.Count(rel, string(os.PathSeparator)) >= MaxRecursionLevel {
 													return filepath.SkipDir
 												}
 											}
 										}
 										if strings.HasSuffix(directoryEntry.Name(), ".jar") {
-											// Reconstruct original path logic (remove /proc/pid/root prefix for reporting)
-											relPath := ""
-											if strings.HasPrefix(osPathname, filepath.Join("/proc", p.Pid(), "root")) {
-												relPath = strings.TrimPrefix(osPathname, filepath.Join("/proc", p.Pid(), "root"))
-											} else {
-												relPath = osPathname
-											}
-											
+											relPath := strings.TrimPrefix(osPathname, procRoot)
 											if !strings.HasPrefix(relPath, "/") {
 												relPath = "/" + relPath
 											}
-											
-											if set.Contains(relPath) || (filepath.Base(relPath) != "rt.jar" && (strings.Contains(relPath, "jdk") || strings.Contains(relPath, "jre"))) {
-												return nil
-											}
-											
-											if r, err := zip.OpenReader(osPathname); err == nil {
-												findJar(c, rec, r, relPath)
-												r.Close()
-											}
-											set.Add(relPath)
+											scanJar(osPathname, relPath)
 										}
 										return nil
 									},

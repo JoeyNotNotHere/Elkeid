@@ -100,7 +100,7 @@ var (
 		matchFunc: func(rc RuleContext) ([]byte, *App) {
 			cmdline := rc.cmdline
 			if strings.Contains(cmdline, "apisix") {
-				return &[]byte{}, &App{Name: "apache-apisix", Type: "web_service", Matched: true}
+				return nil, &App{Name: "apache-apisix", Type: "web_service", Matched: true}
 			}
 			return nil, nil
 		},
@@ -127,7 +127,7 @@ var (
 			matchFunc: func(rc RuleContext) ([]byte, *App) {
 				cmdline := rc.cmdline
 				if strings.Contains(cmdline, "apisix") {
-					return &[]byte{}, &App{Name: "apache-apisix", Type: "web_service", Matched: true}
+					return nil, &App{Name: "apache-apisix", Type: "web_service", Matched: true}
 				}
 				return nil, nil
 			},
@@ -154,7 +154,7 @@ var (
 				matchFunc: func(rc RuleContext) ([]byte, *App) {
 					cmdline := rc.cmdline
 					if strings.Contains(cmdline, "apisix") {
-						return &[]byte{}, &App{Name: "apache-apisix", Type: "web_service", Matched: true}
+						return nil, &App{Name: "apache-apisix", Type: "web_service", Matched: true}
 					}
 					return nil, nil
 				},
@@ -547,25 +547,6 @@ var (
 	javaRule = &AppRule{
 		name: "java_app",
 		confFunc: func(rc RuleContext) string {
-			cmdline := rc.cmdline
-			if strings.Contains(cmdline, "kafka") {
-				return kafkaRule.confFunc(rc)
-			}
-			if strings.Contains(cmdline, "rocketmq") {
-				return rocketmqRule.confFunc(rc)
-			}
-			if strings.Contains(cmdline, "nacos") {
-				return nacosRule.confFunc(rc)
-			}
-			if strings.Contains(cmdline, "elasticsearch") {
-				return elasticsearchRule.confFunc(rc)
-			}
-			if strings.Contains(cmdline, "jenkins") {
-				return jenkinsRule.confFunc(rc)
-			}
-			if strings.Contains(cmdline, "logstash") {
-				return logstashRule.confFunc(rc)
-			}
 			return ""
 		},
 	}
@@ -573,19 +554,6 @@ var (
 	pythonRule = &AppRule{
 		name: "python_app",
 		confFunc: func(rc RuleContext) string {
-			cmdline := rc.cmdline
-			if strings.Contains(cmdline, "manage.py") || strings.Contains(cmdline, "django") {
-				return djangoRule.confFunc(rc)
-			}
-			if strings.Contains(cmdline, "ansible") {
-				return ansibleRule.confFunc(rc)
-			}
-			if strings.Contains(cmdline, "salt") {
-				return saltstackRule.confFunc(rc)
-			}
-			if strings.Contains(cmdline, "jumpserver") {
-				return jumpserverRule.confFunc(rc)
-			}
 			return ""
 		},
 	}
@@ -598,7 +566,7 @@ var (
 		matchFunc: func(rc RuleContext) ([]byte, *App) {
 			cmdline := rc.cmdline
 			if strings.Contains(cmdline, "kibana") {
-				return &[]byte{}, &App{Name: "kibana", Type: "web_service", Matched: true}
+				return nil, &App{Name: "kibana", Type: "web_service", Matched: true}
 			}
 			return nil, nil
 		},
@@ -663,77 +631,115 @@ var (
 	}
 )
 
-func (r *AppRule) GenerateApp(rc RuleContext) ([]byte, *App) {
-	// Hook to dispatch java rule
-	if r.name == "java_app" {
-		cmdline := rc.cmdline
-		if strings.Contains(cmdline, "kafka") {
-			return kafkaRule.GenerateApp(rc)
-		}
-		if strings.Contains(cmdline, "rocketmq") {
-			return rocketmqRule.GenerateApp(rc)
-		}
-		if strings.Contains(cmdline, "nacos") {
-			return nacosRule.GenerateApp(rc)
-		}
-		if strings.Contains(cmdline, "elasticsearch") {
-			return elasticsearchRule.GenerateApp(rc)
-		}
-		if strings.Contains(cmdline, "jenkins") {
-			return jenkinsRule.GenerateApp(rc)
-		}
-		if strings.Contains(cmdline, "logstash") {
-			return logstashRule.GenerateApp(rc)
-		}
-		if strings.Contains(cmdline, "hadoop") {
-			return &[]byte{}, &App{Name: "hadoop", Type: "big_data", Matched: true}
-		}
-		if strings.Contains(cmdline, "druid") {
-			return &[]byte{}, &App{Name: "druid", Type: "database", Matched: true}
-		}
-		if strings.Contains(cmdline, "canal") {
-			return &[]byte{}, &App{Name: "canal", Type: "middleware", Matched: true}
-		}
-		if strings.Contains(cmdline, "doris") {
-			return &[]byte{}, &App{Name: "doris", Type: "database", Matched: true}
-		}
-		if strings.Contains(cmdline, "nexus") {
-			return &[]byte{}, &App{Name: "nexus", Type: "devops", Matched: true}
-		}
-		if strings.Contains(cmdline, "ruoyi") {
-			return &[]byte{}, &App{Name: "ruoyi", Type: "web_service", Matched: true}
-		}
-		if strings.Contains(cmdline, "skywalking") {
-			return &[]byte{}, &App{Name: "skywalking", Type: "devops", Matched: true}
-		}
-		if strings.Contains(cmdline, "xxl-job") {
-			return &[]byte{}, &App{Name: "xxl-job", Type: "devops", Matched: true}
-		}
-		if strings.Contains(cmdline, "ambari") {
-			return &[]byte{}, &App{Name: "ambari", Type: "devops", Matched: true}
-		}
-		if strings.Contains(cmdline, "logbase") {
-			return &[]byte{}, &App{Name: "logbase", Type: "big_data", Matched: true}
+// extractVersionFromCmdline uses FindSubmatch to extract version from cmdline via capture group.
+// Falls back to FindString if no capture group found.
+func extractVersionFromCmdline(cmdline string, re *regexp.Regexp) string {
+	if re == nil {
+		return ""
+	}
+	matches := re.FindStringSubmatch(cmdline)
+	if len(matches) > 1 {
+		return matches[1]
+	}
+	return re.FindString(cmdline)
+}
+
+type javaAppEntry struct {
+	keyword string
+	rule    *AppRule
+	name    string
+	appType string
+}
+
+var javaRuleApps = []javaAppEntry{
+	{keyword: "kafka", rule: kafkaRule},
+	{keyword: "rocketmq", rule: rocketmqRule},
+	{keyword: "nacos", rule: nacosRule},
+	{keyword: "elasticsearch", rule: elasticsearchRule},
+	{keyword: "jenkins", rule: jenkinsRule},
+	{keyword: "logstash", rule: logstashRule},
+}
+
+var javaSimpleApps = []javaAppEntry{
+	{keyword: "hadoop", name: "hadoop", appType: "big_data"},
+	{keyword: "druid", name: "druid", appType: "database"},
+	{keyword: "canal", name: "canal", appType: "middleware"},
+	{keyword: "doris", name: "doris", appType: "database"},
+	{keyword: "nexus", name: "nexus", appType: "devops"},
+	{keyword: "ruoyi", name: "ruoyi", appType: "web_service"},
+	{keyword: "skywalking", name: "skywalking", appType: "devops"},
+	{keyword: "xxl-job", name: "xxl-job", appType: "devops"},
+	{keyword: "ambari", name: "ambari", appType: "devops"},
+	{keyword: "logbase", name: "logbase", appType: "big_data"},
+}
+
+type pythonAppEntry struct {
+	keyword  string
+	keyword2 string
+	rule     *AppRule
+	name     string
+	appType  string
+}
+
+var pythonSimpleApps = []pythonAppEntry{
+	{keyword: "manage.py", keyword2: "django", rule: djangoRule},
+	{keyword: "ansible", name: "ansible", appType: "devops"},
+	{keyword: "salt", name: "saltstack", appType: "devops"},
+	{keyword: "jumpserver", name: "jumpserver", appType: "devops"},
+	{keyword: "archery", name: "archery", appType: "devops"},
+}
+
+func dispatchJavaApp(rc RuleContext) ([]byte, *App) {
+	cmdline := rc.cmdline
+	for _, entry := range javaRuleApps {
+		if strings.Contains(cmdline, entry.keyword) {
+			if entry.rule.versionRegex != nil && rc.appVersion == "" {
+				rc.appVersion = extractVersionFromCmdline(cmdline, entry.rule.versionRegex)
+			}
+			return entry.rule.GenerateApp(rc)
 		}
 	}
-	// Hook to dispatch python rule
+	for _, entry := range javaSimpleApps {
+		if strings.Contains(cmdline, entry.keyword) {
+			return nil, &App{Name: entry.name, Type: entry.appType, Matched: true}
+		}
+	}
+	return nil, nil
+}
+
+func dispatchPythonApp(rc RuleContext) ([]byte, *App) {
+	cmdline := rc.cmdline
+	for _, entry := range pythonSimpleApps {
+		matched := strings.Contains(cmdline, entry.keyword)
+		if !matched && entry.keyword2 != "" {
+			matched = strings.Contains(cmdline, entry.keyword2)
+		}
+		if matched {
+			if entry.rule != nil {
+				return entry.rule.GenerateApp(rc)
+			}
+			return nil, &App{Name: entry.name, Type: entry.appType, Matched: true}
+		}
+	}
+	return nil, nil
+}
+
+func (r *AppRule) GenerateApp(rc RuleContext) ([]byte, *App) {
+	// Check matchFunc first (fixes APISIX/Kibana recognition)
+	if r.matchFunc != nil {
+		if output, app := r.matchFunc(rc); app != nil {
+			if r.confFunc != nil {
+				app.Conf = r.confFunc(rc)
+			}
+			return output, app
+		}
+	}
+
+	if r.name == "java_app" {
+		return dispatchJavaApp(rc)
+	}
 	if r.name == "python_app" {
-		cmdline := rc.cmdline
-		if strings.Contains(cmdline, "manage.py") || strings.Contains(cmdline, "django") {
-			return djangoRule.GenerateApp(rc)
-		}
-		if strings.Contains(cmdline, "ansible") {
-			return &[]byte{}, &App{Name: "ansible", Type: "devops", Matched: true}
-		}
-		if strings.Contains(cmdline, "salt") {
-			return &[]byte{}, &App{Name: "saltstack", Type: "devops", Matched: true}
-		}
-		if strings.Contains(cmdline, "jumpserver") {
-			return &[]byte{}, &App{Name: "jumpserver", Type: "devops", Matched: true}
-		}
-		if strings.Contains(cmdline, "archery") {
-			return &[]byte{}, &App{Name: "archery", Type: "devops", Matched: true}
-		}
+		return dispatchPythonApp(rc)
 	}
 
 	var output []byte

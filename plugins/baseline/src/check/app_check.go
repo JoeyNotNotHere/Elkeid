@@ -2,8 +2,7 @@ package check
 
 import (
 	"bufio"
-	"errors"
-	"io/ioutil"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -11,19 +10,26 @@ import (
 	"sync"
 )
 
-// Weak Password Dictionary (In-memory)
 var (
-	weakPasswords = map[string]bool{
+	defaultWeakPasswords = map[string]bool{
 		"123456":   true,
 		"password": true,
 		"admin":    true,
 		"root":     true,
 		"12345678": true,
 	}
+	weakPasswords = copyMap(defaultWeakPasswords)
 	weakPassMutex sync.RWMutex
 )
 
-// Minimal Process Info
+func copyMap(src map[string]bool) map[string]bool {
+	dst := make(map[string]bool, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
 type ProcessInfo struct {
 	Pid     string
 	Name    string
@@ -31,32 +37,28 @@ type ProcessInfo struct {
 	Cwd     string
 }
 
-// Find processes by name pattern
 func findProcesses(pattern string) ([]ProcessInfo, error) {
 	var procs []ProcessInfo
-	files, err := ioutil.ReadDir("/proc")
+	entries, err := os.ReadDir("/proc")
 	if err != nil {
 		return nil, err
 	}
 
 	re := regexp.MustCompile(pattern)
 
-	for _, f := range files {
+	for _, f := range entries {
 		if !f.IsDir() || !isNumeric(f.Name()) {
 			continue
 		}
 		pid := f.Name()
-		cmdlinePath := filepath.Join("/proc", pid, "cmdline")
-		cmdlineBytes, err := ioutil.ReadFile(cmdlinePath)
+		cmdlineBytes, err := os.ReadFile(filepath.Join("/proc", pid, "cmdline"))
 		if err != nil {
 			continue
 		}
-		cmdline := string(cmdlineBytes)
-		// Replace null bytes with space
-		cmdline = strings.ReplaceAll(cmdline, "\x00", " ")
-		
+		cmdline := strings.ReplaceAll(string(cmdlineBytes), "\x00", " ")
+
 		exePath, _ := os.Readlink(filepath.Join("/proc", pid, "exe"))
-		
+
 		if re.MatchString(cmdline) || re.MatchString(exePath) {
 			cwd, _ := os.Readlink(filepath.Join("/proc", pid, "cwd"))
 			procs = append(procs, ProcessInfo{
@@ -79,9 +81,7 @@ func isNumeric(s string) bool {
 	return true
 }
 
-// Helper to find config file from cmdline args or default paths
 func findConfigFile(proc ProcessInfo, argFlag string, defaultPaths []string) string {
-	// 1. Try to find in cmdline
 	if argFlag != "" {
 		re := regexp.MustCompile(argFlag + `\s*=?\s*(\S+)`)
 		matches := re.FindStringSubmatch(proc.Cmdline)
@@ -89,11 +89,14 @@ func findConfigFile(proc ProcessInfo, argFlag string, defaultPaths []string) str
 			return matches[1]
 		}
 	} else {
-		// Try positional argument (heuristic: ends with .conf, .ini, .properties, .xml, .yaml, .yml)
 		parts := strings.Fields(proc.Cmdline)
 		for i, part := range parts {
-			if i == 0 { continue } // Skip executable
-			if strings.HasPrefix(part, "-") { continue } // Skip flags
+			if i == 0 {
+				continue
+			}
+			if strings.HasPrefix(part, "-") {
+				continue
+			}
 			ext := filepath.Ext(part)
 			switch ext {
 			case ".conf", ".ini", ".properties", ".xml", ".yaml", ".yml":
@@ -102,7 +105,6 @@ func findConfigFile(proc ProcessInfo, argFlag string, defaultPaths []string) str
 		}
 	}
 
-	// 2. Try default paths
 	rootPath := filepath.Join("/proc", proc.Pid, "root")
 	for _, p := range defaultPaths {
 		fullPath := filepath.Join(rootPath, p)
@@ -113,7 +115,6 @@ func findConfigFile(proc ProcessInfo, argFlag string, defaultPaths []string) str
 	return ""
 }
 
-// Read properties file
 func readProperties(path string) (map[string]string, error) {
 	props := make(map[string]string)
 	file, err := os.Open(path)
@@ -136,63 +137,117 @@ func readProperties(path string) (map[string]string, error) {
 	return props, nil
 }
 
-// Update weak password dictionary
+// UpdateWeakPassDict replaces the entire weak password dictionary (full sync from server).
 func UpdateWeakPassDict(passwords []string) {
 	weakPassMutex.Lock()
 	defer weakPassMutex.Unlock()
+	newDict := copyMap(defaultWeakPasswords)
 	for _, p := range passwords {
-		weakPasswords[p] = true
+		p = strings.TrimSpace(p)
+		if p != "" {
+			newDict[p] = true
+		}
 	}
+	weakPasswords = newDict
 }
 
-// Check if password is weak
 func isWeakPassword(pass string) bool {
 	weakPassMutex.RLock()
 	defer weakPassMutex.RUnlock()
 	return weakPasswords[pass]
 }
 
+// collectRisks collects all risk messages into a single error string.
+// Returns true (pass) if no risks, false with combined error if risks found.
+func collectRisks(risks []string) (bool, error) {
+	if len(risks) == 0 {
+		return true, nil
+	}
+	return false, fmt.Errorf("%s", strings.Join(risks, "; "))
+}
+
+// --- Nacos shared helper ---
+
+func findNacosHomeAndProps(proc ProcessInfo) (homeDir string, props map[string]string, ok bool) {
+	confPath := findConfigFile(proc, "-Dnacos.home", nil)
+	if confPath != "" {
+		homeDir = confPath
+		confPath = filepath.Join(confPath, "conf", "application.properties")
+	} else {
+		homeDir = proc.Cwd
+		confPath = filepath.Join(proc.Cwd, "conf", "application.properties")
+	}
+
+	if _, err := os.Stat(confPath); err != nil {
+		return "", nil, false
+	}
+
+	props, err := readProperties(confPath)
+	if err != nil {
+		return "", nil, false
+	}
+	return homeDir, props, true
+}
+
 // --- Check Implementations ---
 
-// CheckRedisWeakPassword
-// Returns: true (pass/skip), false (failed)
 func CheckRedisWeakPassword() (bool, error) {
 	procs, _ := findProcesses("redis-server")
 	if len(procs) == 0 {
-		return true, nil // Skip if not running
+		return true, nil
 	}
 
+	var risks []string
 	for _, proc := range procs {
-		// Redis config often passed as positional arg
 		confPath := findConfigFile(proc, "", []string{"/etc/redis/redis.conf", "/etc/redis.conf"})
 		if confPath == "" {
-			continue // No config found, skip risk reporting as per requirement
+			continue
 		}
 
-		// Redis config is space separated usually
-		content, err := ioutil.ReadFile(confPath)
+		file, err := os.Open(confPath)
 		if err != nil {
 			continue
 		}
-		
-		re := regexp.MustCompile(`requirepass\s+(\S+)`)
-		match := re.FindStringSubmatch(string(content))
-		if len(match) > 1 {
-			pass := match[1]
-			// High Risk: Default password "redis" or "admin" or "123456"
-			if pass == "redis" || pass == "admin" {
-				return false, errors.New("High Risk: Redis using default password")
+
+		var requirepass, masterauth string
+		scanner := bufio.NewScanner(file)
+		for scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+			if strings.HasPrefix(line, "#") || line == "" {
+				continue
 			}
-			if isWeakPassword(pass) {
-				return false, errors.New("Medium Risk: Weak password detected in Redis config")
+			if re := regexp.MustCompile(`^requirepass\s+(\S+)`); true {
+				if m := re.FindStringSubmatch(line); len(m) > 1 {
+					requirepass = m[1]
+				}
 			}
+			if re := regexp.MustCompile(`^masterauth\s+(\S+)`); true {
+				if m := re.FindStringSubmatch(line); len(m) > 1 {
+					masterauth = m[1]
+				}
+			}
+		}
+		file.Close()
+
+		procLabel := fmt.Sprintf("[pid=%s]", proc.Pid)
+		if requirepass == "" {
+			risks = append(risks, fmt.Sprintf("High Risk: %s No requirepass set in Redis config", procLabel))
 		} else {
-			// No password set -> High Risk
-			// Check if bind is safe? Simplified: Report risk.
-			return false, errors.New("High Risk: No password set in Redis config")
+			if requirepass == "redis" || requirepass == "admin" {
+				risks = append(risks, fmt.Sprintf("High Risk: %s Redis using default password", procLabel))
+			} else if isWeakPassword(requirepass) {
+				risks = append(risks, fmt.Sprintf("Medium Risk: %s Weak requirepass detected", procLabel))
+			}
+		}
+		if masterauth != "" {
+			if masterauth == "redis" || masterauth == "admin" {
+				risks = append(risks, fmt.Sprintf("High Risk: %s Redis masterauth using default password", procLabel))
+			} else if isWeakPassword(masterauth) {
+				risks = append(risks, fmt.Sprintf("Medium Risk: %s Weak masterauth detected", procLabel))
+			}
 		}
 	}
-	return true, nil
+	return collectRisks(risks)
 }
 
 func CheckMysqlWeakPassword() (bool, error) {
@@ -200,38 +255,41 @@ func CheckMysqlWeakPassword() (bool, error) {
 	if len(procs) == 0 {
 		return true, nil
 	}
-	
+
+	var risks []string
 	for _, proc := range procs {
-		confPath := findConfigFile(proc, "--defaults-file", []string{"/etc/my.cnf", "/etc/mysql/my.cnf"})
+		confPath := findConfigFile(proc, "--defaults-file", []string{
+			"/etc/my.cnf", "/etc/mysql/my.cnf", "/var/lib/my.cnf", "/var/lib/mysql/my.cnf",
+		})
 		if confPath == "" {
 			continue
 		}
-		
-		content, err := ioutil.ReadFile(confPath)
+
+		file, err := os.Open(confPath)
 		if err != nil {
 			continue
 		}
-		text := string(content)
-		
-		// Check for plain text password in client section (Risk)
-		re := regexp.MustCompile(`password\s*=\s*(\S+)`)
-		match := re.FindStringSubmatch(text)
-		if len(match) > 1 {
-			pass := match[1]
-			// High Risk: Default password "root" or "mysql"
-			if pass == "root" || pass == "mysql" {
-				return false, errors.New("High Risk: MySQL using default password")
+
+		procLabel := fmt.Sprintf("[pid=%s]", proc.Pid)
+		scanner := bufio.NewScanner(file)
+		for scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+			if strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") || line == "" {
+				continue
 			}
-			if isWeakPassword(pass) {
-				return false, errors.New("Medium Risk: Weak password detected in MySQL config")
+			re := regexp.MustCompile(`^password\s*=\s*(\S+)`)
+			if m := re.FindStringSubmatch(line); len(m) > 1 {
+				pass := m[1]
+				if pass == "root" || pass == "mysql" {
+					risks = append(risks, fmt.Sprintf("High Risk: %s MySQL using default password", procLabel))
+				} else if isWeakPassword(pass) {
+					risks = append(risks, fmt.Sprintf("Medium Risk: %s Weak password detected in MySQL config", procLabel))
+				}
 			}
 		}
-
-		// Heuristic: Check if validate_password plugin is missing/disabled -> Potential Risk
-		// Requirement implies checking password strength logic.
-		// If we can't verify hash, we assume config check pass unless clear weakness found.
+		file.Close()
 	}
-	return true, nil
+	return collectRisks(risks)
 }
 
 func CheckPostgresWeakPassword() (bool, error) {
@@ -240,6 +298,7 @@ func CheckPostgresWeakPassword() (bool, error) {
 		return true, nil
 	}
 
+	var risks []string
 	for _, proc := range procs {
 		var dataDir string
 		re := regexp.MustCompile(`-D\s+(\S+)`)
@@ -247,49 +306,50 @@ func CheckPostgresWeakPassword() (bool, error) {
 		if len(match) > 1 {
 			dataDir = match[1]
 		}
-        
-        var hbaPath string
-        if dataDir != "" {
-            hbaPath = filepath.Join(dataDir, "pg_hba.conf")
-        } else {
-             // Try common locations
-             candidates := []string{
-                 "/var/lib/pgsql/data/pg_hba.conf",
-                 "/var/lib/postgresql/data/pg_hba.conf",
-             }
-             for _, c := range candidates {
-                 if _, err := os.Stat(c); err == nil {
-                     hbaPath = c
-                     break
-                 }
-             }
-        }
 
-        if hbaPath == "" {
-            continue
-        }
+		var hbaPaths []string
+		if dataDir != "" {
+			hbaPaths = append(hbaPaths, filepath.Join(dataDir, "pg_hba.conf"))
+		}
+		candidates := []string{
+			"/var/lib/pgsql/data/pg_hba.conf",
+			"/var/lib/postgresql/data/pg_hba.conf",
+		}
+		pgVersionDirs, _ := filepath.Glob("/etc/postgresql/*/main/pg_hba.conf")
+		candidates = append(candidates, pgVersionDirs...)
+		pgVersionDirs2, _ := filepath.Glob("/var/lib/postgresql/*/main/pg_hba.conf")
+		candidates = append(candidates, pgVersionDirs2...)
+		for _, c := range candidates {
+			if _, err := os.Stat(c); err == nil {
+				hbaPaths = append(hbaPaths, c)
+			}
+		}
 
-        content, err := ioutil.ReadFile(hbaPath)
-        if err != nil {
-            continue
-        }
-        
-        scanner := bufio.NewScanner(strings.NewReader(string(content)))
-        for scanner.Scan() {
-            line := strings.TrimSpace(scanner.Text())
-            if strings.HasPrefix(line, "#") || line == "" {
-                continue
-            }
-            fields := strings.Fields(line)
-            if len(fields) >= 4 {
-                method := fields[len(fields)-1]
-                if method == "trust" {
-                     return false, errors.New("High Risk: PostgreSQL allows 'trust' authentication (no password required)")
-                }
-            }
-        }
+		procLabel := fmt.Sprintf("[pid=%s]", proc.Pid)
+		for _, hbaPath := range hbaPaths {
+			content, err := os.ReadFile(hbaPath)
+			if err != nil {
+				continue
+			}
+
+			scanner := bufio.NewScanner(strings.NewReader(string(content)))
+			for scanner.Scan() {
+				line := strings.TrimSpace(scanner.Text())
+				if strings.HasPrefix(line, "#") || line == "" {
+					continue
+				}
+				fields := strings.Fields(line)
+				if len(fields) >= 4 {
+					method := fields[len(fields)-1]
+					if method == "trust" {
+						risks = append(risks, fmt.Sprintf("High Risk: %s PostgreSQL allows 'trust' authentication in %s", procLabel, hbaPath))
+					}
+				}
+			}
+			break
+		}
 	}
-	return true, nil
+	return collectRisks(risks)
 }
 
 func CheckNacosWeakPassword() (bool, error) {
@@ -298,56 +358,47 @@ func CheckNacosWeakPassword() (bool, error) {
 		return true, nil
 	}
 
+	var risks []string
 	for _, proc := range procs {
-		confPath := findConfigFile(proc, "-Dnacos.home", nil)
-        var homeDir string
-		if confPath != "" {
-            homeDir = confPath
-			confPath = filepath.Join(confPath, "conf", "application.properties")
-		} else {
-            homeDir = proc.Cwd
-			confPath = filepath.Join(proc.Cwd, "conf", "application.properties")
-		}
-
-		if _, err := os.Stat(confPath); err != nil {
-			continue // No config, skip
-		}
-
-		props, err := readProperties(confPath)
-		if err != nil {
+		homeDir, props, ok := findNacosHomeAndProps(proc)
+		if !ok {
 			continue
 		}
+		procLabel := fmt.Sprintf("[pid=%s]", proc.Pid)
 
-		// High Risk: Auth disabled
 		if val, ok := props["nacos.core.auth.enabled"]; ok && val == "false" {
-			return false, errors.New("High Risk: Nacos authentication is disabled")
+			risks = append(risks, fmt.Sprintf("High Risk: %s Nacos authentication is disabled", procLabel))
 		}
-		
-		// Check token secret
+
+		defaultSecret := "SecretKey012345678901234567890123456789012345678901234567890123456789"
 		if val, ok := props["nacos.core.auth.plugin.nacos.token.secret.key"]; ok {
-			// High Risk: Default secret key
-			if strings.Contains(val, "SecretKey012345678901234567890123456789012345678901234567890123456789") {
-				return false, errors.New("High Risk: Nacos using default token secret key")
-			}
-			// High Risk: Default identity key
-			if strings.Contains(val, "example") || strings.Contains(val, "nacos") {
-				return false, errors.New("High Risk: Nacos using default/simple secret key")
-			}
-			// Medium Risk: Short key
-			if len(val) < 32 { 
-				return false, errors.New("Medium Risk: Nacos token secret key is too short")
+			if val == defaultSecret {
+				risks = append(risks, fmt.Sprintf("High Risk: %s Nacos using default token secret key", procLabel))
+			} else if len(val) < 32 {
+				risks = append(risks, fmt.Sprintf("Medium Risk: %s Nacos token secret key is too short", procLabel))
 			}
 		}
 
-        // Check mysql-schema.sql for default password
-        schemaPath := filepath.Join(homeDir, "conf", "mysql-schema.sql")
-        if content, err := ioutil.ReadFile(schemaPath); err == nil {
-             if strings.Contains(string(content), "nacos/nacos") {
-                 return false, errors.New("High Risk: Nacos mysql-schema.sql contains default password")
-             }
-        }
+		if val, ok := props["nacos.core.auth.default.token.secret.key"]; ok {
+			if val == defaultSecret {
+				risks = append(risks, fmt.Sprintf("High Risk: %s Nacos using default token secret key (legacy config)", procLabel))
+			}
+		}
+
+		schemaPath := filepath.Join(homeDir, "conf", "mysql-schema.sql")
+		if content, err := os.ReadFile(schemaPath); err == nil {
+			if strings.Contains(string(content), "nacos/nacos") {
+				risks = append(risks, fmt.Sprintf("High Risk: %s Nacos mysql-schema.sql contains default password", procLabel))
+			}
+		}
+		derbyPath := filepath.Join(homeDir, "conf", "derby-schema.sql")
+		if content, err := os.ReadFile(derbyPath); err == nil {
+			if strings.Contains(string(content), "nacos/nacos") {
+				risks = append(risks, fmt.Sprintf("High Risk: %s Nacos derby-schema.sql contains default password", procLabel))
+			}
+		}
 	}
-	return true, nil
+	return collectRisks(risks)
 }
 
 func CheckNacosConfig() (bool, error) {
@@ -356,19 +407,118 @@ func CheckNacosConfig() (bool, error) {
 		return true, nil
 	}
 
+	var risks []string
 	for _, proc := range procs {
-		confPath := findConfigFile(proc, "-Dnacos.home", nil)
-		var homeDir string
-		if confPath != "" {
-			homeDir = confPath
-			confPath = filepath.Join(confPath, "conf", "application.properties")
-		} else {
-			homeDir = proc.Cwd
-			confPath = filepath.Join(proc.Cwd, "conf", "application.properties")
+		homeDir, props, ok := findNacosHomeAndProps(proc)
+		if !ok {
+			continue
+		}
+		procLabel := fmt.Sprintf("[pid=%s]", proc.Pid)
+
+		if val, ok := props["nacos.core.auth.enabled"]; ok && val == "false" {
+			risks = append(risks, fmt.Sprintf("High Risk: %s nacos.core.auth.enabled=false", procLabel))
 		}
 
-		if _, err := os.Stat(confPath); err != nil {
-			continue // No config, skip
+		if val, ok := props["nacos.core.auth.admin.enabled"]; ok && val == "false" {
+			risks = append(risks, fmt.Sprintf("High Risk: %s nacos.core.auth.admin.enabled=false", procLabel))
+		}
+		if val, ok := props["nacos.core.auth.console.enabled"]; ok && val == "false" {
+			risks = append(risks, fmt.Sprintf("High Risk: %s nacos.core.auth.console.enabled=false", procLabel))
+		}
+
+		if val, ok := props["nacos.core.auth.enable.userAgentAuthWhite"]; ok && val != "false" {
+			risks = append(risks, fmt.Sprintf("Medium Risk: %s nacos.core.auth.enable.userAgentAuthWhite should be false", procLabel))
+		}
+
+		defaultSecret := "SecretKey012345678901234567890123456789012345678901234567890123456789"
+		if val, ok := props["nacos.core.auth.plugin.nacos.token.secret.key"]; ok {
+			if val == defaultSecret {
+				risks = append(risks, fmt.Sprintf("High Risk: %s Nacos using default token secret key", procLabel))
+			} else if len(val) < 32 {
+				risks = append(risks, fmt.Sprintf("Medium Risk: %s Nacos token secret key is too short", procLabel))
+			}
+		}
+
+		if val, ok := props["nacos.core.auth.default.token.secret.key"]; ok {
+			if val == defaultSecret {
+				risks = append(risks, fmt.Sprintf("High Risk: %s Nacos using default legacy token secret key (1.2.0~2.0.4)", procLabel))
+			}
+		}
+
+		if val, ok := props["nacos.core.auth.server.identity.key"]; ok && val == "serverIdentity" {
+			risks = append(risks, fmt.Sprintf("High Risk: %s Nacos using default server identity key", procLabel))
+		}
+		if val, ok := props["nacos.core.auth.server.identity.value"]; ok && val == "security" {
+			risks = append(risks, fmt.Sprintf("High Risk: %s Nacos using default server identity value", procLabel))
+		}
+
+		if val, ok := props["management.endpoints.web.exposure.include"]; ok && val == "*" {
+			risks = append(risks, fmt.Sprintf("High Risk: %s All actuator endpoints exposed (include=*)", procLabel))
+		}
+		if val, ok := props["management.endpoints.web.exposure.exclude"]; !ok || val != "*" {
+			risks = append(risks, fmt.Sprintf("Medium Risk: %s management.endpoints.web.exposure.exclude is not set to * (endpoints may be exposed)", procLabel))
+		}
+
+		schemaPath := filepath.Join(homeDir, "conf", "mysql-schema.sql")
+		if content, err := os.ReadFile(schemaPath); err == nil {
+			if strings.Contains(string(content), "nacos/nacos") {
+				risks = append(risks, fmt.Sprintf("High Risk: %s mysql-schema.sql contains default password nacos/nacos", procLabel))
+			}
+		}
+		derbyPath := filepath.Join(homeDir, "conf", "derby-schema.sql")
+		if content, err := os.ReadFile(derbyPath); err == nil {
+			if strings.Contains(string(content), "nacos/nacos") {
+				risks = append(risks, fmt.Sprintf("High Risk: %s derby-schema.sql contains default password nacos/nacos", procLabel))
+			}
+		}
+	}
+	return collectRisks(risks)
+}
+
+func CheckArcheryConfig() (bool, error) {
+	procs, _ := findProcesses("archery")
+	if len(procs) == 0 {
+		return true, nil
+	}
+
+	debugRe := regexp.MustCompile(`(?m)^\s*DEBUG\s*=\s*.*True`)
+
+	var risks []string
+	for _, proc := range procs {
+		settingsPath := filepath.Join(proc.Cwd, "archery", "settings.py")
+		content, err := os.ReadFile(settingsPath)
+		if err != nil {
+			continue
+		}
+
+		text := string(content)
+		procLabel := fmt.Sprintf("[pid=%s]", proc.Pid)
+
+		if debugRe.MatchString(text) {
+			risks = append(risks, fmt.Sprintf("High Risk: %s Archery running in DEBUG mode", procLabel))
+		}
+
+		if strings.Contains(text, `hfusaf2m4ot#7)fkw#di2bu6(cv0@opwmafx5n#6=3d%x^hpl6`) {
+			risks = append(risks, fmt.Sprintf("High Risk: %s Archery using default SECRET_KEY", procLabel))
+		}
+	}
+	return collectRisks(risks)
+}
+
+func CheckXxlJobConfig() (bool, error) {
+	procs, _ := findProcesses("xxl-job-admin")
+	if len(procs) == 0 {
+		return true, nil
+	}
+
+	var risks []string
+	for _, proc := range procs {
+		confPath := findConfigFile(proc, "-Dspring.config.location", []string{
+			"/xxl-job/xxl-job-admin/src/main/resources/application.properties",
+			"application.properties",
+		})
+		if confPath == "" {
+			confPath = filepath.Join(proc.Cwd, "application.properties")
 		}
 
 		props, err := readProperties(confPath)
@@ -376,150 +526,27 @@ func CheckNacosConfig() (bool, error) {
 			continue
 		}
 
-		// 1. Check Auth Enabled
-		if val, ok := props["nacos.core.auth.enabled"]; ok && val == "false" {
-			return false, errors.New("High Risk: Nacos authentication is disabled (nacos.core.auth.enabled=false)")
-		}
+		procLabel := fmt.Sprintf("[pid=%s]", proc.Pid)
 
-		// 2. Check Token Secret Key
-		if val, ok := props["nacos.core.auth.plugin.nacos.token.secret.key"]; ok {
-			if strings.Contains(val, "SecretKey012345678901234567890123456789012345678901234567890123456789") {
-				return false, errors.New("High Risk: Nacos using default token secret key")
-			}
-			if len(val) < 32 {
-				return false, errors.New("Medium Risk: Nacos token secret key is too short")
-			}
-		}
-
-		// 3. Check Server Identity Key/Value
-		if val, ok := props["nacos.core.auth.server.identity.key"]; ok {
-			if val == "serverIdentity" {
-				return false, errors.New("High Risk: Nacos using default server identity key")
-			}
-		}
-		if val, ok := props["nacos.core.auth.server.identity.value"]; ok {
-			if val == "security" {
-				return false, errors.New("High Risk: Nacos using default server identity value")
-			}
-		}
-
-		// 4. Check User Agent Auth White
-		if val, ok := props["nacos.core.auth.enable.userAgentAuthWhite"]; ok && val != "false" {
-			return false, errors.New("Medium Risk: Nacos user agent auth whitelist should be disabled")
-		}
-
-		// 5. Check Admin/Console Auth Enabled
-		if val, ok := props["nacos.core.auth.admin.enabled"]; ok && val == "false" {
-			return false, errors.New("High Risk: Nacos admin auth is disabled")
-		}
-		if val, ok := props["nacos.core.auth.console.enabled"]; ok && val == "false" {
-			return false, errors.New("High Risk: Nacos console auth is disabled")
-		}
-
-		// 6. Check Actuator Endpoints Exposure
-		if val, ok := props["management.endpoints.web.exposure.include"]; ok && val == "*" {
-			return false, errors.New("High Risk: All Nacos actuator endpoints are exposed")
-		}
-		if val, ok := props["management.endpoints.web.exposure.exclude"]; ok && val == "*" {
-			// This is actually good if exclude is *, meaning nothing is exposed?
-			// Requirement says: "是否配置为*，表示不允许所有端点暴露。" -> If it is *, it means exclude all, which is safe.
-			// Wait, usually exclude=* means exclude everything.
-			// Let's re-read doc: "参数：management.endpoints.web.exposure.exclude 说明：是否配置为*，表示不允许所有端点暴露。"
-			// This implies if it IS *, it's safe. If NOT *, maybe risk?
-			// But usually we check for risks. If include is *, it's risk.
-			// If exclude is NOT *, and include is *, it's risk.
-			// Let's stick to checking include=* as the primary risk.
-		}
-
-		// 7. Check mysql-schema.sql for default password
-		schemaPath := filepath.Join(homeDir, "conf", "mysql-schema.sql")
-		if content, err := ioutil.ReadFile(schemaPath); err == nil {
-			if strings.Contains(string(content), "nacos/nacos") {
-				return false, errors.New("High Risk: Nacos mysql-schema.sql contains default password")
-			}
-		}
-		schemaPathDerby := filepath.Join(homeDir, "conf", "derby-schema.sql")
-		if content, err := ioutil.ReadFile(schemaPathDerby); err == nil {
-			if strings.Contains(string(content), "nacos/nacos") {
-				return false, errors.New("High Risk: Nacos derby-schema.sql contains default password")
-			}
-		}
-	}
-	return true, nil
-}
-
-func CheckArcheryConfig() (bool, error) {
-    procs, _ := findProcesses("archery")
-    if len(procs) == 0 {
-        return true, nil
-    }
-    
-    for _, proc := range procs {
-        settingsPath := filepath.Join(proc.Cwd, "archery", "settings.py")
-        content, err := ioutil.ReadFile(settingsPath)
-        if err != nil {
-             continue
-        }
-        
-        text := string(content)
-        // High Risk: Debug mode enabled
-        if strings.Contains(text, "DEBUG = True") {
-            return false, errors.New("High Risk: Archery running in DEBUG mode")
-        }
-        
-        // Check SECRET_KEY
-        if strings.Contains(text, "SECRET_KEY") {
-             // Simple check for default or weak keys if known, or just existence?
-             // Proposal says: SECRET_KEY=(str, "hfusaf2m4ot#7)fkw#di2bu6(cv0@opwmafx5n#6=3d%x^hpl6")
-             // This looks like a default key example.
-             if strings.Contains(text, "hfusaf2m4ot#7)fkw#di2bu6(cv0@opwmafx5n#6=3d%x^hpl6") {
-                  return false, errors.New("High Risk: Archery using default SECRET_KEY")
-             }
-        }
-    }
-    return true, nil
-}
-
-func CheckXxlJobConfig() (bool, error) {
-    procs, _ := findProcesses("xxl-job-admin")
-    if len(procs) == 0 {
-        return true, nil
-    }
-    
-    for _, proc := range procs {
-        confPath := findConfigFile(proc, "-Dspring.config.location", []string{"application.properties"})
-        if confPath == "" {
-             confPath = filepath.Join(proc.Cwd, "application.properties")
-        }
-        
-        props, err := readProperties(confPath)
-        if err != nil {
-            continue
-        }
-        
 		if token, ok := props["xxl.job.accessToken"]; ok {
 			if token == "" {
-				return false, errors.New("High Risk: XXL-JOB access token is empty")
-			}
-			// High Risk: Default token (if applicable, e.g. "default_token")
-			if token == "default_token" {
-				return false, errors.New("High Risk: XXL-JOB using default access token")
-			}
-			if isWeakPassword(token) {
-				return false, errors.New("Medium Risk: XXL-JOB access token is weak")
+				risks = append(risks, fmt.Sprintf("High Risk: %s XXL-JOB access token is empty", procLabel))
+			} else if token == "default_token" {
+				risks = append(risks, fmt.Sprintf("High Risk: %s XXL-JOB using default access token", procLabel))
+			} else if isWeakPassword(token) {
+				risks = append(risks, fmt.Sprintf("Medium Risk: %s XXL-JOB access token is weak", procLabel))
 			}
 		} else {
-			return false, errors.New("High Risk: XXL-JOB access token not configured")
+			risks = append(risks, fmt.Sprintf("High Risk: %s XXL-JOB access token not configured", procLabel))
 		}
 
-        if pass, ok := props["spring.datasource.password"]; ok {
-            if pass == "" {
-                return false, errors.New("High Risk: XXL-JOB datasource password is empty")
-            }
-            if isWeakPassword(pass) {
-                return false, errors.New("Medium Risk: XXL-JOB datasource password is weak")
-            }
-        }
+		if pass, ok := props["spring.datasource.password"]; ok {
+			if pass == "" {
+				risks = append(risks, fmt.Sprintf("High Risk: %s XXL-JOB datasource password is empty", procLabel))
+			} else if isWeakPassword(pass) {
+				risks = append(risks, fmt.Sprintf("Medium Risk: %s XXL-JOB datasource password is weak", procLabel))
+			}
+		}
 	}
-	return true, nil
+	return collectRisks(risks)
 }

@@ -242,9 +242,11 @@ func FuncCheck(param []string) (result interface{}, err error) {
 		funcRes, checkErr = CheckArcheryConfig()
 	case "check_xxl_job_config":
 		funcRes, checkErr = CheckXxlJobConfig()
+	default:
+		return false, fmt.Errorf("unknown func_check: %s", param[0])
 	}
 	if checkErr != nil {
-		return false, checkErr // Return false with risk description
+		return false, checkErr
 	}
 	return funcRes, nil
 }
