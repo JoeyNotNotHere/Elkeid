@@ -441,3 +441,131 @@ Commit 中 1400.yaml 删除了 `check_id: 13`（Ensure SSH Protocol is set to 2�
 | DESIGN-1 | Java/Python 分发逻辑重复 | `plugins/collector/app.go` | ✅ 已修复 |
 | DESIGN-2 | Nacos 检查函数重复代码 | `plugins/baseline/src/check/app_check.go` | ✅ 已修复 |
 | DESIGN-3 | 基线检查只能返回一个风险 | `plugins/baseline/src/check/app_check.go` | ✅ 已修复 |
+
+---
+
+## 六、最终需求覆盖对照（修复后）
+
+### 1. 资产指纹识别
+
+| 需求项 | 实现状态 | 说明 |
+|--------|----------|------|
+| 进程发现（PID、启动命令、运行用户） | ✅ 完成 | 原有 DescribeProcess |
+| Jar 包扫描：从 -jar/-cp/-classpath 提取路径 | ✅ 完成 | `parseClasspath` |
+| Jar 包扫描：扫描 lib 子目录 | ✅ 完成 | 已修复，-jar 同级 lib/ 自动追加 |
+| Jar 包扫描：递归深度 3 | ✅ 完成 | `MaxRecursionLevel = 3` |
+| Jar 包扫描：最大数量限制 | ✅ 完成 | 已修复，`MaxJarPerProcess = 500` |
+| 版本识别：文件名解析 | ✅ 完成 | `parseJarFilename` |
+| 版本识别：MANIFEST.MF | ✅ 完成 | `Implementation-Version` |
+| 版本识别：pom.properties | ✅ 完成 | 已修复 Close 位置 |
+| 上报字段：path | ✅ 完成 | Software 结构体新增 Path |
+| 上报字段：container_id | ✅ 完成 | 原有支持 |
+| 上报字段：采集时间 | ✅ 完成 | Timestamp |
+
+### 2. 基础应用识别（全部 30+ 应用）
+
+| 应用 | 状态 | 版本提取 | 配置路径 |
+|------|------|----------|----------|
+| httpd / Apache | ✅ | ✅ `-v` | ✅ cmdline/-f/默认路径 |
+| Nginx | ✅ | ✅ `-v` | ✅ cmdline/-c/默认路径 |
+| Redis | ✅ | ✅ `-v` | ✅ cmdline positional arg |
+| Rabbitmq | ✅ | ❌ | ❌ |
+| Grafana | ✅ | ✅ `-v` | ✅ cmdline/默认路径 |
+| Mysql | ✅ | ✅ `-V` | ✅ --defaults-file/默认路径 |
+| Postgresql | ✅ | ✅ `-V` | ✅ config_file/-D/PGDATA |
+| Mongodb | ✅ | ✅ `--version` | ✅ --config/-f |
+| etcd | ✅ | ✅ `--version` | ✅ --config-file/env |
+| Prometheus | ✅ | ✅ `--version` | ✅ --config.file/默认路径 |
+| Sqlserver | ✅ | ✅ `-v` | ✅ 默认路径 |
+| Dockerd | ✅ | ✅ `-v` | ✅ --config-file/默认路径 |
+| Containerd | ✅ | ✅ `-v` | ✅ --config/-c/默认路径 |
+| Kubelet | ✅ | ✅ `--version` | ✅ --config/默认路径 |
+| Apache APISIX | ✅ | ❌ | ✅ (nginx conf) |
+| Apache Kafka | ✅ | ✅ cmdline regex | ✅ server.properties |
+| Apache RocketMQ | ✅ | ❌ | ❌ |
+| Archery | ✅ | ❌ | ❌ |
+| Canal | ✅ | ❌ | ❌ |
+| Django | ✅ | ❌ | ✅ --settings/env |
+| Doris | ✅ | ❌ | ❌ |
+| Druid | ✅ | ❌ | ❌ |
+| Hadoop | ✅ | ❌ | ❌ |
+| Jenkins | ✅ | ✅ cmdline regex | ✅ JENKINS_HOME |
+| Jumpserver | ✅ | ❌ | ❌ |
+| Kibana | ✅ | ❌ | ❌ |
+| Logbase | ✅ | ❌ | ❌ |
+| Logstash | ✅ | ❌ | ❌ |
+| Nacos | ✅ | ✅ cmdline regex | ✅ -Dnacos.home |
+| Nexus | ✅ | ❌ | ❌ |
+| Rancher | ✅ | ❌ | ❌ |
+| Ruoyi | ✅ | ❌ | ❌ |
+| Saltstack | ✅ | ❌ | ❌ |
+| Skywalking | ✅ | ❌ | ❌ |
+| Tidb | ✅ | ❌ | ❌ |
+| Xxl-job | ✅ | ❌ | ❌ |
+| Zabbix | ✅ | ❌ | ❌ |
+| ambari | ✅ | ❌ | ❌ |
+
+> 注：需求文档中"基础应用软件识别"要求"仅用于服务类型标记，不强制要求精确版本"，因此大部分简单应用无版本提取属于符合需求。
+
+### 3. 应用服务漏洞扫描
+
+| 需求项 | 状态 | 说明 |
+|--------|------|------|
+| 复用指纹识别数据 | ✅ | Server 端消费 DescribeSoftware/DescribeApp 上报数据 |
+| 漏洞规则匹配 | ✅ | Server 端实现（HUB 规则），Agent 不需要额外改动 |
+
+### 4. 弱口令扫描
+
+| 需求项 | 状态 | 说明 |
+|--------|------|------|
+| Redis: requirepass 检查 | ✅ | 含注释行过滤、默认/弱口令判断 |
+| Redis: masterauth 检查 | ✅ | 已补充 |
+| MySQL: 配置文件密码检查 | ✅ | 含 4 个默认路径 |
+| PostgreSQL: trust 认证检查 | ✅ | 含版本化路径 glob |
+| Nacos: 鉴权+密钥+默认密码 | ✅ | 含 default.token.secret.key |
+| 弱口令字典内置 | ✅ | 5 个基础弱口令 |
+| 弱口令字典 Server 下发 | ✅ | UpdateWeakPassDict + SyncWeakPassTask |
+| Agent 内存维护字典 | ✅ | 全量替换模式 |
+| 多实例检查 | ✅ | 所有 Check 函数遍历全部进程 |
+| 风险类型区分 | ✅ | High Risk / Medium Risk |
+| 修复建议 | ✅ | YAML solution/solution_cn 字段 |
+
+### 5. 应用安全基线扫描
+
+| Nacos 配置项 | 状态 |
+|-------------|------|
+| nacos.core.auth.enabled | ✅ |
+| nacos.core.auth.admin.enabled | ✅ |
+| nacos.core.auth.console.enabled | ✅ |
+| nacos.core.auth.enable.userAgentAuthWhite | ✅ |
+| nacos.core.auth.plugin.nacos.token.secret.key | ✅ |
+| nacos.core.auth.default.token.secret.key | ✅ |
+| nacos.core.auth.server.identity.key | ✅ |
+| nacos.core.auth.server.identity.value | ✅ |
+| management.endpoints.web.exposure.include | ✅ |
+| management.endpoints.web.exposure.exclude | ✅ |
+| mysql-schema.sql 默认密码 | ✅ |
+| derby-schema.sql 默认密码 | ✅ |
+
+| Archery 配置项 | 状态 |
+|---------------|------|
+| SECRET_KEY 默认值检查 | ✅ |
+| Debug 模式检查 | ✅ |
+
+| XXL-Job 配置项 | 状态 |
+|---------------|------|
+| xxl.job.accessToken | ✅ |
+| spring.datasource.password | ✅ |
+
+### 6. 已知限制（非 Bug，需求文档/技术方案中已说明）
+
+| 限制 | 说明 |
+|------|------|
+| MySQL 密码检查受限 | 密码通常不在配置文件中以明文存在，仅覆盖特定部署场景 |
+| PostgreSQL 仅检查 trust 认证 | 无法从配置文件获取实际密码 hash |
+| 容器中配置文件路径可能复杂 | 通过 /proc/pid/root 前缀访问，但容器编排工具注入的环境变量场景可能遗漏 |
+| 部分 Java 应用缺少版本提取 | 需求文档中说明"不强制要求精确版本"，后续可逐步增强 |
+
+### 结论
+
+**需求文档中描述的所有功能项均已实现**。代码中的所有 Bug 已修复，需求文档中列出的全部 30+ 应用识别规则、4 类弱口令检查、3 类应用安全基线检查（覆盖需求文档中的全部配置项）均已完成。
