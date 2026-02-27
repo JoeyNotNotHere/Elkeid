@@ -2,7 +2,7 @@
 
 ## 概述
 
-`driver-ebpf` 是 Elkeid 主机入侵检测系统的 eBPF 版本内核数据采集插件，替代原有的 Linux Kernel Module (LKM) 实现。
+`driver_ebpf` 是 Elkeid 主机入侵检测系统的 eBPF 版本内核数据采集插件，替代原有的 Linux Kernel Module (LKM) 实现。
 
 ---
 
@@ -67,13 +67,13 @@ func loadProgram(bytecode []byte) {
 
 ```bash
 # 当前方案：部署一个文件
-scp driver-ebpf server:/usr/local/bin/
-ssh server "sudo /usr/local/bin/driver-ebpf"
+scp driver_ebpf server:/usr/local/bin/
+ssh server "sudo /usr/local/bin/driver_ebpf"
 
 # Tracee 方案：需要确保依赖存在
-scp driver-ebpf server:/usr/local/bin/
+scp driver_ebpf server:/usr/local/bin/
 ssh server "sudo apt install -y libbpf0 libelf1 zlib1g"  # 或携带动态库
-ssh server "sudo /usr/local/bin/driver-ebpf"
+ssh server "sudo /usr/local/bin/driver_ebpf"
 ```
 
 #### 3. 更轻量的依赖链
@@ -215,7 +215,7 @@ BPF 验证器确保了**即使 BPF 代码有 bug，也不会导致内核崩溃**
 
 ```
 ┌────────────────────────────────────────────────────────────────────┐
-│                          driver-ebpf                                │
+│                          driver_ebpf                                │
 ├────────────────────────────────────────────────────────────────────┤
 │                                                                     │
 │  ┌────────────────┐  ┌────────────────┐  ┌────────────────┐        │
@@ -258,7 +258,7 @@ BPF 验证器确保了**即使 BPF 代码有 bug，也不会导致内核崩溃**
 ## 目录结构
 
 ```
-plugins/driver-ebpf/
+plugins/driver_ebpf/
 ├── DESIGN.md              # 本文档
 ├── WORK_LOG.md            # 开发日志
 ├── Makefile               # 根编译脚本
@@ -453,7 +453,7 @@ eBPF CO-RE (Compile Once - Run Everywhere) 解决了上述问题：
 │                         │ go build                               │
 │                         ▼                                        │
 │              ┌─────────────────────┐                             │
-│              │    driver-ebpf      │  单一可执行文件              │
+│              │    driver_ebpf      │  单一可执行文件              │
 │              │  (内嵌 BPF 字节码)   │  约 10-15 MB               │
 │              └─────────────────────┘                             │
 │                         │                                        │
@@ -510,13 +510,13 @@ spec, err := loadElkeid()  // bpf2go 生成的函数
 ```bash
 # 完整编译流程
 go generate ./...  # 编译 BPF 并生成 Go 代码
-go build -o driver-ebpf .  # 编译最终可执行文件
+go build -o driver_ebpf .  # 编译最终可执行文件
 ```
 
 ### 目录结构 (使用 bpf2go 后)
 
 ```
-plugins/driver-ebpf/
+plugins/driver_ebpf/
 ├── main.go
 ├── go.mod
 ├── bpf/
@@ -551,7 +551,7 @@ make
 ### 编译 Go
 
 ```bash
-go build -o driver-ebpf .
+go build -o driver_ebpf .
 ```
 
 ### 运行
@@ -562,7 +562,7 @@ sudo mkdir -p /usr/local/share/elkeid/bpf/
 sudo cp bpf/elkeid.bpf.o /usr/local/share/elkeid/bpf/
 
 # 运行
-sudo ./driver-ebpf
+sudo ./driver_ebpf
 ```
 
 ---
@@ -624,11 +624,11 @@ jobs:
         run: go generate ./...
       
       - name: Build
-        run: go build -o driver-ebpf .
+        run: go build -o driver_ebpf .
       
       - name: Upload artifact
         uses: actions/upload-artifact@v3
         with:
-          name: driver-ebpf
-          path: driver-ebpf
+          name: driver_ebpf
+          path: driver_ebpf
 ```

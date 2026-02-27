@@ -15,7 +15,7 @@
 
 - **Tracee 版本**: v0.22.0 (或当前 main 分支)
 - **源码路径**: `/Users/joey/code/tracee/pkg/ebpf/c/`
-- **目标路径**: `/Users/joey/code/Elkeid/plugins/driver-ebpf/bpf/`
+- **目标路径**: `/Users/joey/code/Elkeid/plugins/driver_ebpf/bpf/`
 
 ## 2. 事件映射表
 
@@ -221,7 +221,7 @@ make
 
 ### 编译 Go 程序
 ```bash
-cd /path/to/driver-ebpf
+cd /path/to/driver_ebpf
 go build -o elkeid-driver .
 ```
 

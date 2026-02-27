@@ -10,7 +10,7 @@ package loader
 //   - bpf2go: go install github.com/cilium/ebpf/cmd/bpf2go@latest
 //
 // Usage:
-//   cd plugins/driver-ebpf/pkg/loader
+//   cd plugins/driver_ebpf/pkg/loader
 //   go generate
 //
 // This will generate:

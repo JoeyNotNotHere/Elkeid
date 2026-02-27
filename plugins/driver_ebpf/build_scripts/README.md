@@ -1,6 +1,6 @@
 # Docker 编译指南
 
-在 macOS 上使用 Docker 编译 Linux 版本的 driver-ebpf。
+在 macOS 上使用 Docker 编译 Linux 版本的 driver_ebpf。
 
 ## 前提条件
 
@@ -11,7 +11,7 @@
 ### 完整编译（推荐）
 
 ```bash
-cd plugins/driver-ebpf
+cd plugins/driver_ebpf
 ./build_scripts/build-in-docker.sh
 ```
 
@@ -45,8 +45,8 @@ cd plugins/driver-ebpf
 
 ```
 output/
-├── driver-ebpf-linux-amd64    # Linux x86_64 二进制
-├── driver-ebpf-linux-arm64    # Linux ARM64 二进制
+├── driver_ebpf-linux-amd64    # Linux x86_64 二进制
+├── driver_ebpf-linux-arm64    # Linux ARM64 二进制
 ├── elkeid.bpf.o               # BPF 字节码
 └── elkeid_bpfel.o             # bpf2go 生成的嵌入式 BPF
 ```
@@ -55,14 +55,14 @@ output/
 
 ```bash
 # 复制二进制
-scp output/driver-ebpf-linux-amd64 server:/usr/local/bin/driver-ebpf
+scp output/driver_ebpf-linux-amd64 server:/usr/local/bin/driver_ebpf
 
 # 复制 BPF 对象文件（如果使用分离加载模式）
 ssh server "sudo mkdir -p /usr/local/share/elkeid/bpf"
 scp output/elkeid.bpf.o server:/usr/local/share/elkeid/bpf/
 
 # 运行
-ssh server "sudo /usr/local/bin/driver-ebpf"
+ssh server "sudo /usr/local/bin/driver_ebpf"
 ```
 
 ## 服务器要求

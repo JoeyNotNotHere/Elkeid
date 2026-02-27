@@ -1,7 +1,7 @@
-# driver-ebpf Code Review
+# driver_ebpf Code Review
 
 > Review Date: 2026-02-26
-> Scope: `plugins/driver-ebpf/` vs `driver/LKM/` + `plugins/driver/`
+> Scope: `plugins/driver_ebpf/` vs `driver/LKM/` + `plugins/driver/`
 
 ---
 
@@ -9,7 +9,7 @@
 
 ### 1.1 整体架构
 
-driver-ebpf 是 Elkeid 原始 LKM 内核模块 (`driver/LKM/`) + Rust 用户态插件 (`plugins/driver/`) 的 eBPF 替代实现，使用 Go + cilium/ebpf 库。
+driver_ebpf 是 Elkeid 原始 LKM 内核模块 (`driver/LKM/`) + Rust 用户态插件 (`plugins/driver/`) 的 eBPF 替代实现，使用 Go + cilium/ebpf 库。
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -110,7 +110,7 @@ driver-ebpf 是 Elkeid 原始 LKM 内核模块 (`driver/LKM/`) + Rust 用户态�
 
 ### 1.3 与原架构的对比
 
-| 维度 | 原 LKM + plugins/driver | driver-ebpf |
+| 维度 | 原 LKM + plugins/driver | driver_ebpf |
 |------|------------------------|-------------|
 | 内核采集 | 内核模块 (kprobes, smith_hook.c) | eBPF programs (elkeid.bpf.c) |
 | 用户态语言 | Rust | Go |
@@ -414,7 +414,7 @@ eBPF 使用 `kprobe/security_socket_connect`（entry hook），无法获得连�
 
 ### 5.1 整体评价
 
-driver-ebpf 项目的架构设计合理，模块划分清晰（loader/reader/adapter/cache/manager），代码组织符合 Go 项目规范。BPF 程序覆盖了大部分核心安全事件，schema 与原 LKM 保持了一致的 Event ID 定义。
+driver_ebpf 项目的架构设计合理，模块划分清晰（loader/reader/adapter/cache/manager），代码组织符合 Go 项目规范。BPF 程序覆盖了大部分核心安全事件，schema 与原 LKM 保持了一致的 Event ID 定义。
 
 但当前代码存在几个严重的正确性问题（pid/tid 反转、accept socket 读取错误、结构体对齐风险），**在修复这些 Bug 之前不应上线生产环境**。
 

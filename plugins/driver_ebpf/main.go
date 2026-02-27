@@ -7,7 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"driver-ebpf/pkg/manager"
+	"driver_ebpf/pkg/manager"
 )
 
 func main() {

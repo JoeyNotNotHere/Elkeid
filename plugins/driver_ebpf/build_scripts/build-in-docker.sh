@@ -65,7 +65,7 @@ compile_bpf() {
     
     docker run --rm \
         -v "$PLUGINS_DIR:/build/plugins" \
-        -w /build/plugins/driver-ebpf \
+        -w /build/plugins/driver_ebpf \
         "$IMAGE_NAME" \
         bash -c '
             cd bpf
@@ -86,7 +86,8 @@ generate_go_bindings() {
     
     docker run --rm \
         -v "$PLUGINS_DIR:/build/plugins" \
-        -w /build/plugins/driver-ebpf \
+        -w /build/plugins/driver_ebpf \
+        -e GOPROXY=https://goproxy.cn,https://proxy.golang.org,direct \
         "$IMAGE_NAME" \
         bash -c '
             # 安装与 go.mod 指定版本兼容的 bpf2go
@@ -112,18 +113,19 @@ compile_go() {
     
     docker run --rm \
         -v "$PLUGINS_DIR:/build/plugins" \
-        -w /build/plugins/driver-ebpf \
+        -w /build/plugins/driver_ebpf \
         -e CGO_ENABLED=0 \
         -e GOOS=linux \
         -e GOARCH=amd64 \
+        -e GOPROXY=https://goproxy.cn,https://proxy.golang.org,direct \
         "$IMAGE_NAME" \
         bash -c '
-            echo "==> Building driver-ebpf for Linux amd64..."
-            go build -o output/driver-ebpf-linux-amd64 .
+            echo "==> Building driver_ebpf for Linux amd64..."
+            go build -o output/driver_ebpf-linux-amd64 .
             
             echo "==> Build info:"
-            ls -la output/driver-ebpf-linux-amd64 2>/dev/null || echo "Build failed"
-            file output/driver-ebpf-linux-amd64 2>/dev/null || true
+            ls -la output/driver_ebpf-linux-amd64 2>/dev/null || echo "Build failed"
+            file output/driver_ebpf-linux-amd64 2>/dev/null || true
         '
     
     # 同时编译 arm64 版本
@@ -131,18 +133,19 @@ compile_go() {
     
     docker run --rm \
         -v "$PLUGINS_DIR:/build/plugins" \
-        -w /build/plugins/driver-ebpf \
+        -w /build/plugins/driver_ebpf \
         -e CGO_ENABLED=0 \
         -e GOOS=linux \
         -e GOARCH=arm64 \
+        -e GOPROXY=https://goproxy.cn,https://proxy.golang.org,direct \
         "$IMAGE_NAME" \
         bash -c '
-            echo "==> Building driver-ebpf for Linux arm64..."
-            go build -o output/driver-ebpf-linux-arm64 .
+            echo "==> Building driver_ebpf for Linux arm64..."
+            go build -o output/driver_ebpf-linux-arm64 .
             
             echo "==> Build info:"
-            ls -la output/driver-ebpf-linux-arm64 2>/dev/null || echo "Build failed"
-            file output/driver-ebpf-linux-arm64 2>/dev/null || true
+            ls -la output/driver_ebpf-linux-arm64 2>/dev/null || echo "Build failed"
+            file output/driver_ebpf-linux-arm64 2>/dev/null || true
         '
 }
 
@@ -174,10 +177,10 @@ show_results() {
     echo ""
     log_info "Deployment (单文件部署 - BPF 已嵌入二进制):"
     echo "  # 只需要复制一个文件"
-    echo "  scp output/driver-ebpf-linux-amd64 server:/usr/local/bin/driver-ebpf"
+    echo "  scp output/driver_ebpf-linux-amd64 server:/usr/local/bin/driver_ebpf"
     echo ""
     echo "  # 运行"
-    echo "  sudo /usr/local/bin/driver-ebpf"
+    echo "  sudo /usr/local/bin/driver_ebpf"
     echo ""
     echo "  # 注意: .o 文件仅供调试，部署不需要"
 }

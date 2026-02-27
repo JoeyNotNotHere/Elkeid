@@ -1,4 +1,4 @@
-module driver-ebpf
+module driver_ebpf
 
 go 1.21
 

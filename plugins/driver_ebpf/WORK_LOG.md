@@ -8,7 +8,7 @@
 - **`GAP_ANALYSIS.md`**: LKM Driver (C) 与 Tracee eBPF (C/Go) 的采集能力对比与差异分析。
 
 ## 项目目标
-基于 Tracee 将 Elkeid Driver 从 LKM (Rust) 迁移到 eBPF (Go)，实现 `driver-ebpf` 插件以替代原有的 `driver` 插件。
+基于 Tracee 将 Elkeid Driver 从 LKM (Rust) 迁移到 eBPF (Go)，实现 `driver_ebpf` 插件以替代原有的 `driver` 插件。
 
 ## ⚠️ 工作规范 (Work Guidelines)
 1.  **代码落盘**：每次完成代码逻辑后，必须执行 `write` 写入文件，严禁只在内存中构思。
@@ -25,10 +25,10 @@
 - **日期**: 2026-02-25
 - **功能点**: 项目初始化
 - **操作记录**:
-  1.  **创建目录**: 建立了 `plugins/driver-ebpf`。
-  2.  **初始化模块**: 执行 `go mod init driver-ebpf`。
+  1.  **创建目录**: 建立了 `plugins/driver_ebpf`。
+  2.  **初始化模块**: 执行 `go mod init driver_ebpf`。
   3.  **创建文件**: 编写了 `main.go`, `Makefile` 和 `WORK_LOG.md`。
-- **Git 提交**: `feat: init driver-ebpf project structure`
+- **Git 提交**: `feat: init driver_ebpf project structure`
 - **备注**: 使用 `github.com/aquasecurity/tracee` v0.22.0 (因依赖问题)。
 
 #### 步骤 2: 创建包结构与 Manager 骨架
@@ -228,7 +228,7 @@
 
 ### 当前项目结构
 ```
-plugins/driver-ebpf/
+plugins/driver_ebpf/
 ├── main.go
 ├── Makefile
 ├── WORK_LOG.md
@@ -357,7 +357,7 @@ plugins/driver-ebpf/
 
 ### 当前文件结构
 ```
-plugins/driver-ebpf/
+plugins/driver_ebpf/
 ├── WORK_LOG.md          # 工作日志 (本文档)
 ├── EVENTS_SCHEMA.md     # 事件字段定义
 ├── GAP_ANALYSIS.md      # 差异分析
@@ -427,7 +427,7 @@ plugins/driver-ebpf/
 
 ### 当前完整文件结构
 ```
-plugins/driver-ebpf/
+plugins/driver_ebpf/
 ├── WORK_LOG.md              # 工作日志
 ├── EVENTS_SCHEMA.md         # 事件字段定义
 ├── GAP_ANALYSIS.md          # 差异分析
@@ -478,7 +478,7 @@ plugins/driver-ebpf/
 ### 架构总结
 ```
                     ┌──────────────────────────────────────┐
-                    │   Elkeid Driver eBPF (driver-ebpf)   │
+                    │   Elkeid Driver eBPF (driver_ebpf)   │
                     └──────────────────────────────────────┘
                                        │
     ┌──────────────────────────────────┼──────────────────────────────────┐
@@ -631,7 +631,7 @@ bpf/BPF_MIGRATION.md  →  doc/BPF_MIGRATION.md
 
 ### 最终目录结构
 ```
-plugins/driver-ebpf/
+plugins/driver_ebpf/
 ├── DESIGN.md, WORK_LOG.md, Makefile, main.go, go.mod
 ├── bpf/
 │   ├── DESIGN.md, Makefile, elkeid.bpf.c
@@ -1069,12 +1069,12 @@ replace plugins => ../lib/go
 
 ```
 output/
-├── driver-ebpf-linux-amd64  (7.3 MB)  - x86_64 Linux 二进制 (含嵌入 BPF)
-├── driver-ebpf-linux-arm64  (7.1 MB)  - ARM64 Linux 二进制 (含嵌入 BPF)
+├── driver_ebpf-linux-amd64  (7.3 MB)  - x86_64 Linux 二进制 (含嵌入 BPF)
+├── driver_ebpf-linux-arm64  (7.1 MB)  - ARM64 Linux 二进制 (含嵌入 BPF)
 └── elkeid.bpf.o             (1.1 MB)  - BPF 对象文件 (仅调试用)
 ```
 
-**单文件部署**: BPF 字节码已通过 bpf2go 嵌入到 Go 二进制中，部署只需要一个 `driver-ebpf` 文件，与现有 Agent 插件更新机制完全兼容。
+**单文件部署**: BPF 字节码已通过 bpf2go 嵌入到 Go 二进制中，部署只需要一个 `driver_ebpf` 文件，与现有 Agent 插件更新机制完全兼容。
 
 ### 使用方式
 ```bash
@@ -1082,7 +1082,7 @@ output/
 ./build_scripts/build-in-docker.sh all
 
 # 部署到 Linux 服务器
-scp output/driver-ebpf-linux-amd64 server:/usr/local/bin/driver-ebpf
+scp output/driver_ebpf-linux-amd64 server:/usr/local/bin/driver_ebpf
 scp output/elkeid.bpf.o server:/usr/local/share/elkeid/bpf/
 ```
 

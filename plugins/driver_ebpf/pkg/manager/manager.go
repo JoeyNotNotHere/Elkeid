@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
-	"driver-ebpf/pkg/adapter"
-	"driver-ebpf/pkg/cache"
-	"driver-ebpf/pkg/loader"
+	"driver_ebpf/pkg/adapter"
+	"driver_ebpf/pkg/cache"
+	"driver_ebpf/pkg/loader"
 	"plugins"
 )
 

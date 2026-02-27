@@ -7,7 +7,7 @@ all: bpf build
 # Build Go binary
 build:
 	@echo "Building Go binary..."
-	CGO_ENABLED=0 go build -o driver-ebpf .
+	CGO_ENABLED=0 go build -o driver_ebpf .
 
 # Compile BPF program
 bpf:
@@ -16,13 +16,13 @@ bpf:
 
 # Clean all artifacts
 clean:
-	rm -f driver-ebpf
+	rm -f driver_ebpf
 	$(MAKE) -C bpf clean
 
 # Install (requires root)
 install: all
 	$(MAKE) -C bpf install
-	install -D -m 755 driver-ebpf /usr/local/bin/
+	install -D -m 755 driver_ebpf /usr/local/bin/
 
 # Generate code (bpf2go - future)
 generate:

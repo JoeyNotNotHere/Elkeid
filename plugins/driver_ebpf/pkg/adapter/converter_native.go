@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"driver-ebpf/pkg/cache"
-	"driver-ebpf/pkg/loader"
+	"driver_ebpf/pkg/cache"
+	"driver_ebpf/pkg/loader"
 	"plugins"
 )
 

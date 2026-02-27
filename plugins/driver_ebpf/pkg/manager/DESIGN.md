@@ -104,7 +104,7 @@ package main
 
 import (
     "context"
-    "driver-ebpf/pkg/manager"
+    "driver_ebpf/pkg/manager"
     "os/signal"
     "syscall"
 )
