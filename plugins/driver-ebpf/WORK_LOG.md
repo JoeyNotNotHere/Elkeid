@@ -1069,10 +1069,12 @@ replace plugins => ../lib/go
 
 ```
 output/
-├── driver-ebpf-linux-amd64  (6.3 MB)  - x86_64 Linux 二进制
-├── driver-ebpf-linux-arm64  (6.2 MB)  - ARM64 Linux 二进制
-└── elkeid.bpf.o             (1.1 MB)  - BPF 对象文件
+├── driver-ebpf-linux-amd64  (7.3 MB)  - x86_64 Linux 二进制 (含嵌入 BPF)
+├── driver-ebpf-linux-arm64  (7.1 MB)  - ARM64 Linux 二进制 (含嵌入 BPF)
+└── elkeid.bpf.o             (1.1 MB)  - BPF 对象文件 (仅调试用)
 ```
+
+**单文件部署**: BPF 字节码已通过 bpf2go 嵌入到 Go 二进制中，部署只需要一个 `driver-ebpf` 文件，与现有 Agent 插件更新机制完全兼容。
 
 ### 使用方式
 ```bash

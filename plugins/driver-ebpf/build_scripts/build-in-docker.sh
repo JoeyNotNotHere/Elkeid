@@ -172,13 +172,14 @@ show_results() {
     echo ""
     ls -la "$OUTPUT_DIR/" 2>/dev/null || echo "No output files"
     echo ""
-    log_info "Usage:"
-    echo "  # Copy to Linux server"
+    log_info "Deployment (单文件部署 - BPF 已嵌入二进制):"
+    echo "  # 只需要复制一个文件"
     echo "  scp output/driver-ebpf-linux-amd64 server:/usr/local/bin/driver-ebpf"
-    echo "  scp output/elkeid.bpf.o server:/usr/local/share/elkeid/bpf/"
     echo ""
-    echo "  # Run on server"
+    echo "  # 运行"
     echo "  sudo /usr/local/bin/driver-ebpf"
+    echo ""
+    echo "  # 注意: .o 文件仅供调试，部署不需要"
 }
 
 # 主函数

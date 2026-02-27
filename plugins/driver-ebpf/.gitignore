@@ -1,0 +1,3 @@
+# bpf2go generated files (run build_scripts/build-in-docker.sh to generate)
+pkg/loader/elkeid_bpfel_*.go
+pkg/loader/elkeid_bpfel_*.o
