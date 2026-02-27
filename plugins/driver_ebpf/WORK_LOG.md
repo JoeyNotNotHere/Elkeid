@@ -1088,30 +1088,132 @@ scp output/elkeid.bpf.o server:/usr/local/share/elkeid/bpf/
 
 ---
 
-## 剩余工作规划 (约 30%)
+## Step 24: Anti-Rootkit 模块实现 [2026-02-27]
 
-### 重要遗留功能: Anti-Rootkit 模块
+### 目标
+完成 Anti-Rootkit 模块的 eBPF 版本迁移，检测内核级 Rootkit。
 
-**状态**: ⚠️ 未迁移
+### 迁移策略
 
-原 LKM driver 中的 `anti_rootkit.c` 功能尚未迁移到 eBPF 版本。该模块负责检测内核级 rootkit，包括：
+由于 eBPF 对内核数据结构访问有严格限制，采用 **Go 用户态定时扫描** 方案：
 
-| 事件 ID | 检测项 | LKM 实现方式 |
-|---------|--------|-------------|
-| 700 | SYSCALL_HOOK | 检测系统调用表被篡改 |
-| 701 | LKM_HIDDEN | 检测隐藏内核模块 |
-| 702 | INTERRUPTS_HOOK | 检测中断处理被篡改 |
-| 703 | PROC_FILE_HOOK | 检测 /proc 文件系统被篡改 |
+```
+┌─────────────────────────────────────────────────────────┐
+│                   Anti-Rootkit Scanner                   │
+│                   (Go 用户态实现)                        │
+├─────────────────────────────────────────────────────────┤
+│  定时器 (默认 15 分钟，与 LKM 保持一致)                   │
+│       │                                                  │
+│       ├─► detectHiddenModules()  → 事件 702             │
+│       │   └─ 对比 /proc/modules 与 /sys/module/         │
+│       │                                                  │
+│       ├─► detectSyscallHooks()   → 事件 701             │
+│       │   └─ 读取 /proc/kallsyms 检查系统调用地址        │
+│       │                                                  │
+│       ├─► detectProcHooks()      → 事件 700             │
+│       │   └─ 检查 /proc 文件操作函数地址                 │
+│       │                                                  │
+│       └─► detectInterruptHooks() → 事件 703 (x86 only)  │
+│           └─ 检查 IDT 中断处理地址                       │
+└─────────────────────────────────────────────────────────┘
+```
 
-**迁移难点**:
-- 部分检测需要直接读取内核数据结构（syscall table, module list）
-- eBPF 有严格的内存访问限制，可能需要使用 kprobe 或其他技术变通
-- 某些检测可能需要保留为用户态定时扫描（如模块列表对比）
+### 实现内容
 
-**建议方案**:
-1. 评估哪些检测可以用 eBPF 实现（如 hook 检测可用 kprobe 对比）
-2. 其他检测改为 Go 层定时扫描 `/proc` 和 `/sys`
-3. 保持事件 ID 700-703 兼容
+#### 1. 修正事件 ID 定义 (`pkg/adapter/schema.go`)
+
+原 LKM 中的事件 ID 定义：
+| 事件 ID | 常量名 | 说明 |
+|---------|--------|------|
+| 700 | EventIDRootkitProcHook | /proc 文件系统被篡改 |
+| 701 | EventIDRootkitSyscall | 系统调用表被篡改 |
+| 702 | EventIDRootkitHidden | 隐藏内核模块 |
+| 703 | EventIDRootkitIDT | 中断处理被篡改 |
+
+#### 2. 创建 Anti-Rootkit 模块 (`pkg/antirootkit/`)
+
+**新建文件**:
+- `pkg/antirootkit/DESIGN.md`: 设计文档，详细说明迁移策略
+- `pkg/antirootkit/scanner.go`: 核心扫描器实现
+
+**Scanner 结构**:
+```go
+type Scanner struct {
+    config   *ScannerConfig
+    client   *plugins.Client
+    kallsyms map[string]uint64  // /proc/kallsyms 缓存
+}
+```
+
+**实现的检测函数**:
+
+| 函数 | 事件 ID | 检测方法 |
+|------|---------|----------|
+| `detectHiddenModules()` | 702 | 对比 `/proc/modules` 与 `/sys/module/` |
+| `detectSyscallHooks()` | 701 | 从 kallsyms 检查系统调用地址是否在内核代码段 |
+| `detectProcHooks()` | 700 | 检查 proc_root_iterate 地址 |
+| `detectInterruptHooks()` | 703 | 检查 IDT 中断处理地址 (仅 x86) |
+
+#### 3. 集成到 Manager (`pkg/manager/manager.go`)
+
+**配置项新增**:
+```go
+type Config struct {
+    // ... 原有字段 ...
+    AntiRootkitEnabled  bool          // 启用 Anti-Rootkit 扫描
+    AntiRootkitInterval time.Duration // 扫描间隔 (默认 15 分钟)
+}
+```
+
+**生命周期管理**:
+- `Start()`: 启动 rootkitScanner
+- `Stop()`: 停止 rootkitScanner
+
+### 与原 LKM 的对比
+
+| 方面 | LKM 版本 | eBPF 版本 |
+|------|----------|-----------|
+| 执行位置 | 内核态 | 用户态 |
+| 检测时机 | 定时 15 分钟 | 定时 15 分钟 (保持一致) |
+| 数据来源 | 直接内核结构 | /proc, /sys, kallsyms |
+| 事件 ID | 700-703 | 700-703 (完全兼容) |
+
+### 文件变更总结
+
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| pkg/antirootkit/DESIGN.md | 新建 | 设计文档 |
+| pkg/antirootkit/scanner.go | 新建 | 扫描器核心代码 |
+| pkg/adapter/schema.go | 修改 | 修正事件 ID 常量名 |
+| pkg/manager/manager.go | 修改 | 集成 Anti-Rootkit 扫描器 |
+
+### 当前完整目录结构
+```
+plugins/driver_ebpf/
+├── DESIGN.md, WORK_LOG.md, Makefile, main.go, go.mod
+├── bpf/
+│   ├── DESIGN.md, Makefile, elkeid.bpf.c
+│   └── common/  (vmlinux.h, types.h, maps.h, helpers.h)
+├── pkg/
+│   ├── adapter/     (DESIGN.md, encoder.go, schema.go, converter_native.go)
+│   ├── antirootkit/ (DESIGN.md, scanner.go)  ← 新增
+│   ├── cache/       (DESIGN.md, proctree.go, socket.go, user.go)
+│   ├── loader/      (DESIGN.md, loader.go, events.go, reader.go, gen.go)
+│   └── manager/     (DESIGN.md, manager.go)
+├── build_scripts/   (Dockerfile, build-in-docker.sh)
+└── doc/             (EVENTS_SCHEMA.md, GAP_ANALYSIS.md, PROTOCOL.md)
+```
+
+### 状态
+
+✅ Anti-Rootkit 模块已完成
+✅ 事件 ID 700-703 完全兼容原 LKM
+✅ 集成到 Manager 生命周期管理
+⏳ 待 Linux 环境验证
+
+---
+
+## 剩余工作规划 (约 20%)
 
 ### Phase 1: Linux 环境验证 (优先级: P0)
 
@@ -1155,5 +1257,18 @@ scp output/elkeid.bpf.o server:/usr/local/share/elkeid/bpf/
 | 版本发布 | 打 tag，更新 changelog | 1-2h |
 
 ### 总估算
-- **最小可用版本 (Phase 1-2)**: 约 20-40h 工作量
-- **生产就绪版本 (Phase 1-5)**: 约 40-70h 工作量
+- **最小可用版本 (Phase 1-2)**: 约 16-32h 工作量
+- **生产就绪版本 (Phase 1-5)**: 约 32-56h 工作量
+
+### 已完成功能列表
+- ✅ 项目结构和基础设施
+- ✅ Elkeid 二进制协议编码器
+- ✅ 事件 Schema 定义 (30+ 事件)
+- ✅ Cache 层 (进程树、Socket、用户名)
+- ✅ BPF 程序 (23 个 hooks)
+- ✅ Go 事件加载器和解析器
+- ✅ 事件转换器 (BPF 事件 → Elkeid 协议)
+- ✅ Agent 集成 (plugins.Client)
+- ✅ bpf2go 编译架构 (单文件部署)
+- ✅ Docker 编译环境
+- ✅ Anti-Rootkit 模块 (事件 700-703)

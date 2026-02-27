@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"driver_ebpf/pkg/adapter"
+	"driver_ebpf/pkg/antirootkit"
 	"driver_ebpf/pkg/cache"
 	"driver_ebpf/pkg/loader"
 	"plugins"
@@ -16,19 +17,23 @@ import (
 
 // Config holds manager configuration.
 type Config struct {
-	BPFObjectPath  string // Path to compiled BPF object file
-	PerfBufferSize int    // Perf buffer size in pages
-	EventChanSize  int    // Event channel size
-	OutputChanSize int    // Output channel size
+	BPFObjectPath       string        // Path to compiled BPF object file
+	PerfBufferSize      int           // Perf buffer size in pages
+	EventChanSize       int           // Event channel size
+	OutputChanSize      int           // Output channel size
+	AntiRootkitEnabled  bool          // Enable Anti-Rootkit scanner
+	AntiRootkitInterval time.Duration // Anti-Rootkit scan interval
 }
 
 // DefaultConfig returns default configuration.
 func DefaultConfig() *Config {
 	return &Config{
-		BPFObjectPath:  "/usr/local/share/elkeid/bpf/elkeid.bpf.o",
-		PerfBufferSize: 128,
-		EventChanSize:  1000,
-		OutputChanSize: 1000,
+		BPFObjectPath:       "/usr/local/share/elkeid/bpf/elkeid.bpf.o",
+		PerfBufferSize:      128,
+		EventChanSize:       1000,
+		OutputChanSize:      1000,
+		AntiRootkitEnabled:  true,
+		AntiRootkitInterval: 15 * time.Minute,
 	}
 }
 
@@ -47,6 +52,9 @@ type Manager struct {
 
 	// Converter
 	converter *adapter.NativeConverter
+
+	// Anti-Rootkit scanner
+	rootkitScanner *antirootkit.Scanner
 
 	// Agent client
 	client *plugins.Client
@@ -82,14 +90,22 @@ func NewManagerWithConfig(cfg *Config) (*Manager, error) {
 	// Initialize Agent client
 	client := plugins.New()
 
+	// Initialize Anti-Rootkit scanner
+	rootkitCfg := &antirootkit.ScannerConfig{
+		Enabled:      cfg.AntiRootkitEnabled,
+		ScanInterval: cfg.AntiRootkitInterval,
+	}
+	rootkitScanner := antirootkit.NewScanner(rootkitCfg, client)
+
 	return &Manager{
-		config:      cfg,
-		procTree:    procTree,
-		socketCache: socketCache,
-		userCache:   userCache,
-		converter:   converter,
-		client:      client,
-		output:      make(chan []byte, cfg.OutputChanSize),
+		config:         cfg,
+		procTree:       procTree,
+		socketCache:    socketCache,
+		userCache:      userCache,
+		converter:      converter,
+		rootkitScanner: rootkitScanner,
+		client:         client,
+		output:         make(chan []byte, cfg.OutputChanSize),
 	}, nil
 }
 
@@ -169,6 +185,13 @@ func (m *Manager) Start(ctx context.Context) error {
 	// Start periodic cache cleanup
 	m.wg.Add(1)
 	go m.cleanupCaches(ctx)
+
+	// Start Anti-Rootkit scanner
+	if m.rootkitScanner != nil {
+		if err := m.rootkitScanner.Start(ctx); err != nil {
+			fmt.Printf("Warning: failed to start Anti-Rootkit scanner: %v\n", err)
+		}
+	}
 
 	m.running = true
 	fmt.Println("Elkeid eBPF Driver started")
@@ -309,6 +332,11 @@ func (m *Manager) Stop() {
 	}
 
 	fmt.Println("Stopping Elkeid eBPF Driver...")
+
+	// Stop Anti-Rootkit scanner
+	if m.rootkitScanner != nil {
+		m.rootkitScanner.Stop()
+	}
 
 	// Stop reader
 	if m.reader != nil {

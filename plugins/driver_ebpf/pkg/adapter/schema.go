@@ -31,10 +31,10 @@ const (
 	EventIDWriteV2         = 609
 	EventIDUdev            = 610
 	EventIDPrivEscalation  = 611
-	EventIDRootkitSyscall  = 700
-	EventIDRootkitSysTable = 701
-	EventIDRootkitProc     = 702
-	EventIDRootkitIDT      = 703
+	EventIDRootkitProcHook = 700 // PROC_FILE_HOOK - /proc 文件系统被篡改
+	EventIDRootkitSyscall  = 701 // SYSCALL_HOOK - 系统调用表被篡改
+	EventIDRootkitHidden   = 702 // LKM_HIDDEN - 隐藏内核模块
+	EventIDRootkitIDT      = 703 // INTERRUPTS_HOOK - 中断处理被篡改
 )
 
 // Schema defines field names for each event ID.
@@ -192,10 +192,10 @@ var Schema = map[int][]string{
 		"argv", "ppid_argv", "pgid_argv", "username", "pod_name", "exe_hash",
 		"pid_tree", "dpid_argv",
 	},
-	EventIDRootkitSyscall:  {"module_name"},
-	EventIDRootkitSysTable: {"module_name", "syscall_number"},
-	EventIDRootkitProc:     {"module_name"},
-	EventIDRootkitIDT:      {"module_name", "interrupt_number"},
+	EventIDRootkitProcHook: {"module_name"},                       // 700 - /proc hook
+	EventIDRootkitSyscall:  {"module_name", "syscall_number"},     // 701 - syscall hook
+	EventIDRootkitHidden:   {"module_name"},                       // 702 - hidden module
+	EventIDRootkitIDT:      {"module_name", "interrupt_number"},   // 703 - IDT hook
 }
 
 // Tracee event name to Elkeid event ID mapping
