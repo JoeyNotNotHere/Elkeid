@@ -389,8 +389,40 @@ typedef struct {
     int counter;
 } atomic_t;
 
+enum pid_type {
+    PIDTYPE_PID,
+    PIDTYPE_TGID,
+    PIDTYPE_PGID,
+    PIDTYPE_SID,
+    PIDTYPE_MAX,
+};
+
+struct tty_struct {
+    int magic;
+    struct tty_driver *driver;
+    int index;
+    char name[64];
+};
+
+struct upid {
+    int nr;
+    struct pid_namespace *ns;
+};
+
+struct pid {
+    unsigned int level;
+    struct upid numbers[1];
+};
+
 struct signal_struct {
     atomic_t live;
+    struct pid *pids[PIDTYPE_MAX];
+    struct tty_struct *tty;
+};
+
+struct trace_event_raw_sys_enter {
+    long int id;
+    unsigned long args[6];
 };
 
 struct rb_node {
@@ -472,16 +504,6 @@ struct pid_namespace {
     struct ns_common ns;
 };
 
-struct upid {
-    int nr;
-    struct pid_namespace *ns;
-};
-
-struct pid {
-    unsigned int level;
-    struct upid numbers[1];
-};
-
 struct mnt_namespace {
     struct ns_common ns;
 };
@@ -532,6 +554,14 @@ typedef long long int __kernel_loff_t;
 typedef __kernel_loff_t loff_t;
 
 typedef unsigned short umode_t;
+
+struct iattr {
+    unsigned int ia_valid;
+    umode_t ia_mode;
+    kuid_t ia_uid;
+    kgid_t ia_gid;
+    loff_t ia_size;
+};
 
 struct kernfs_node {
     const char *name;

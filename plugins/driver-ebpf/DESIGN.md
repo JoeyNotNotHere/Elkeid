@@ -4,6 +4,207 @@
 
 `driver-ebpf` 是 Elkeid 主机入侵检测系统的 eBPF 版本内核数据采集插件，替代原有的 Linux Kernel Module (LKM) 实现。
 
+---
+
+## 技术选型说明：为什么选择 cilium/ebpf 而非 Tracee
+
+### 背景
+
+原技术调研方案预期：
+- **Go 层**：复用 Tracee 项目使用的 [libbpfgo](https://github.com/aquasecurity/libbpfgo) 库来加载 BPF 程序
+- **BPF 层**：自己编写 C 代码，参考/复制 Tracee 的 BPF 实现，没有的 hook 自己写
+
+经过实际开发评估，**BPF 层方案保持不变**，Go 层选择使用 **cilium/ebpf** 替代 libbpfgo。
+
+### 方案对比
+
+| 对比维度 | 方案 A: libbpfgo (原方案) | 方案 B: cilium/ebpf (当前方案) |
+|---------|--------------------------|-------------------------------|
+| **Go BPF 加载库** | libbpfgo (CGO，Tracee 使用) | cilium/ebpf (纯 Go) |
+| **BPF C 代码** | 自己写（参考/复制 Tracee） | 自己写（参考 Tracee） |
+| **CGO 依赖** | ✅ 需要 | ❌ 不需要 |
+| **运行时依赖** | libbpf.so, libelf.so, zlib | 无 |
+| **交叉编译** | 困难 (需要目标平台 C 工具链) | 简单 (`GOOS=linux go build`) |
+| **间接依赖数** | ~50 (libbpfgo 依赖链) | ~10 |
+| **部署方式** | 需确保动态库存在 | 单文件部署 |
+| **Go 层代码量** | 较少（复用 libbpfgo 封装） | 较多（需自己封装） |
+
+**关键说明**：两个方案的 BPF C 代码都是自己维护的，区别在于 **Go 层用什么库来加载和管理 BPF 程序**。
+
+### 选择 cilium/ebpf 的核心原因
+
+#### 1. 消除 CGO 依赖
+
+CGO (C Go 交互) 带来的问题：
+
+```
+编译时：
+├─ 需要 gcc/clang C 编译器
+├─ 需要 libbpf-dev, libelf-dev, zlib-dev 头文件
+└─ Mac 开发者无法直接编译 Linux 版本 (需要交叉编译工具链)
+
+运行时：
+├─ 需要 libbpf.so 动态库 (或静态链接增加 10MB+)
+├─ 不同发行版库版本可能不兼容
+└─ 目标机器需要安装依赖
+
+调试时：
+├─ C 代码崩溃难以定位 (无 Go 堆栈)
+├─ 内存泄漏难以检测 (Go GC 不管理 C 内存)
+└─ 混合调试复杂
+```
+
+cilium/ebpf 是**纯 Go 实现**，直接通过 `syscall` 与内核 BPF 子系统交互，无需 CGO：
+
+```go
+// cilium/ebpf 内部实现 (简化)
+func loadProgram(bytecode []byte) {
+    syscall.Syscall(SYS_BPF, BPF_PROG_LOAD, ...)  // 纯 Go
+}
+```
+
+#### 2. 单文件部署
+
+```bash
+# 当前方案：部署一个文件
+scp driver-ebpf server:/usr/local/bin/
+ssh server "sudo /usr/local/bin/driver-ebpf"
+
+# Tracee 方案：需要确保依赖存在
+scp driver-ebpf server:/usr/local/bin/
+ssh server "sudo apt install -y libbpf0 libelf1 zlib1g"  # 或携带动态库
+ssh server "sudo /usr/local/bin/driver-ebpf"
+```
+
+#### 3. 更轻量的依赖链
+
+```
+libbpfgo 依赖链：
+├─ github.com/aquasecurity/libbpfgo
+│   ├─ CGO → libbpf (C 库)
+│   │        ├─ libelf
+│   │        └─ zlib
+│   └─ 其他 Go 依赖...
+│
+│ 编译时需要: gcc, libbpf-dev, libelf-dev, zlib-dev
+│ 运行时需要: libbpf.so, libelf.so, zlib.so (或静态链接)
+
+cilium/ebpf 依赖链：
+├─ github.com/cilium/ebpf
+│   └─ golang.org/x/sys (标准库扩展)
+│
+│ 编译时需要: 无额外依赖
+│ 运行时需要: 无
+```
+
+#### 4. 避免 libbpfgo 版本问题
+
+```
+libbpfgo 的已知问题：
+├─ 版本与 libbpf C 库版本强绑定
+├─ 不同 Linux 发行版 libbpf 版本不一致
+├─ 静态链接时二进制增大 10MB+
+└─ CGO 构建在某些环境下不稳定
+```
+
+#### 5. 业界趋势
+
+**Go 语言 eBPF 项目的库选择**：
+
+| 项目 | 语言 | BPF 库 |
+|------|------|--------|
+| Cilium (网络) | Go | cilium/ebpf ✅ |
+| Tetragon (安全) | Go | cilium/ebpf ✅ |
+| Pixie (观测) | Go | cilium/ebpf ✅ |
+| Parca (性能分析) | Go | cilium/ebpf ✅ |
+| Tracee (安全) | Go | libbpfgo (CGO) |
+
+**非 Go 项目参考**（不适用于我们）：
+
+| 项目 | 语言 | BPF 库 |
+|------|------|--------|
+| Falco | C++ | libbpf (C 库) |
+| bcc | Python/C++ | libbcc |
+
+cilium/ebpf 已成为 **Go 生态**中 eBPF 开发的事实标准。
+
+### 关于"BPF 代码在内核运行的安全性"
+
+无论使用哪种方案，BPF 代码都在内核执行。但 eBPF 有**验证器 (Verifier)** 保护：
+
+```
+BPF 程序加载流程：
+                    ┌─────────────────────┐
+用户提交 BPF 代码 ──►│   内核 BPF 验证器    │
+                    │  ├─ 检查无限循环      │
+                    │  ├─ 检查内存越界      │
+                    │  ├─ 检查空指针        │
+                    │  └─ 限制可调用函数    │
+                    └──────────┬──────────┘
+                               │
+              ┌────────────────┴────────────────┐
+              │                                 │
+        验证通过                            验证失败
+              │                                 │
+              ▼                                 ▼
+    ┌─────────────────┐              ┌─────────────────┐
+    │ 加载到 BPF VM   │              │ 拒绝加载        │
+    │ 安全执行        │              │ 返回错误        │
+    └─────────────────┘              └─────────────────┘
+```
+
+BPF 验证器确保了**即使 BPF 代码有 bug，也不会导致内核崩溃**——最多是验证失败无法加载。这比 LKM 内核模块安全得多。
+
+### 与原技术调研方案的关系
+
+原方案意图：
+> "复用 Tracee 项目的 client 端代码（libbpfgo 加载库），内核层 BPF 代码如果 Tracee 有就复制过来，没有就自己写 hook"
+
+```
+原方案架构：
+┌─────────────────────────────────────┐
+│  Go 层: libbpfgo (复用 Tracee 用的) │  ← CGO
+├─────────────────────────────────────┤
+│  BPF 层: 自己写 C 代码              │  ← 自己维护
+│  (参考/复制 Tracee，按需扩展)       │
+└─────────────────────────────────────┘
+
+当前方案架构：
+┌─────────────────────────────────────┐
+│  Go 层: cilium/ebpf (纯 Go)         │  ← 无 CGO
+├─────────────────────────────────────┤
+│  BPF 层: 自己写 C 代码              │  ← 自己维护 (不变)
+│  (参考 Tracee，按需扩展)            │
+└─────────────────────────────────────┘
+```
+
+**变化点**：Go 层的 BPF 加载库从 libbpfgo 改为 cilium/ebpf
+
+**不变点**：BPF C 代码始终是自己维护的
+
+当前实现：
+- ✅ BPF C 代码自己写，**与原方案一致**
+- ✅ 参考 Tracee BPF 实现（vmlinux.h、部分 helper），**与原方案一致**
+- ✅ Go 层改用 **cilium/ebpf** 替代 libbpfgo，**优化点**
+
+这是对原方案 Go 层的**技术优化**——BPF 层方案不变，Go 层选择了更优的加载库。
+
+### 总结
+
+选择 cilium/ebpf 替代 libbpfgo 的理由：
+
+| 选型理由 | 说明 |
+|---------|------|
+| **无 CGO** | 编译简单、交叉编译容易、Mac 开发者友好 |
+| **无运行时依赖** | 单文件部署，无需 libbpf.so 等动态库 |
+| **依赖链轻量** | ~10 个依赖 vs libbpfgo 的 ~50 个依赖 |
+| **业界标准** | cilium/ebpf 是 Go eBPF 的主流选择 |
+| **纯 Go 调试** | 无 C 代码混合，崩溃堆栈清晰 |
+
+**注意**：BPF C 代码层面与原方案一致，都是自己维护。变化仅在 Go 层的 BPF 加载库选择。
+
+---
+
 ## 目标
 
 1. **功能对等**: 实现与 LKM 版本相同的事件采集能力

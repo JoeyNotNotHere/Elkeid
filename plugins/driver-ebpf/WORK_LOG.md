@@ -932,3 +932,226 @@ replace plugins => ../lib/go
 #### P3-17: ProcTreeCache 淘汰优化 ✅
 - **文件**: `pkg/cache/proctree.go`
 - **实现**: `evictOldest()` 从 O(n) 逐个淘汰改为批量淘汰最老的 10%，使用 top-k 选择算法减少全表扫描次数
+
+---
+
+## Step 22: 技术选型说明文档 [2026-02-27]
+
+### 目标
+在 DESIGN.md 中详细说明为什么选择 cilium/ebpf 而非原方案的 libbpfgo (Tracee 使用的库)，预防技术评审时被挑战。
+
+### 背景
+原技术调研方案预期：
+- **Go 层**：复用 Tracee 项目使用的 libbpfgo 库来加载 BPF 程序
+- **BPF 层**：自己编写 C 代码，参考/复制 Tracee 的 BPF 实现
+
+### 方案对比
+
+| 对比维度          | 方案 A: libbpfgo (原方案) | 方案 B: cilium/ebpf (当前方案) |
+|-------------------|--------------------------|-------------------------------|
+| **Go BPF 加载库** | libbpfgo (CGO，Tracee 使用) | cilium/ebpf (纯 Go)           |
+| **BPF C 代码**    | 自己写（参考/复制 Tracee） | 自己写（参考 Tracee）         |
+| **CGO 依赖**      | ✅ 需要                   | ❌ 不需要                     |
+| **运行时依赖**    | libbpf.so, libelf.so, zlib | 无                             |
+| **交叉编译**      | 困难 (需要目标平台 C 工具链) | 简单 (`GOOS=linux go build`)   |
+| **间接依赖数**    | ~50 (libbpfgo 依赖链)    | ~10                            |
+| **部署方式**      | 需确保动态库存在         | 单文件部署                     |
+| **Go 层代码量**   | 较少（复用 libbpfgo 封装） | 较多（需自己封装）             |
+
+**关键说明**：两个方案的 BPF C 代码都是自己维护的，区别在于 **Go 层用什么库来加载和管理 BPF 程序**。
+
+### 选择 cilium/ebpf 的核心原因
+
+1. **消除 CGO 复杂性**
+   - 无需安装 C 编译器和链接目标平台 C 库
+   - macOS 开发、Linux 运行无缝切换
+
+2. **单文件部署**
+   - Go 二进制内嵌 BPF 字节码 (bpf2go)
+   - 运行时无需 libbpf.so 等动态库
+
+3. **依赖链更轻**
+   - cilium/ebpf ~10 个间接依赖
+   - libbpfgo ~50 个间接依赖
+
+4. **避免 libbpfgo 版本问题**
+   - libbpfgo API 频繁变动
+   - 需要与系统 libbpf 版本匹配
+
+5. **行业趋势**
+   - Cilium、Pixie、Tetragon 等主流项目均采用 cilium/ebpf
+
+### 与原调研方案的关系
+```
+原方案架构：              当前方案架构：
+┌─────────────────┐      ┌─────────────────┐
+│  BPF C 代码     │      │  BPF C 代码     │  ← 不变：自己写
+│  (自己写)       │      │  (自己写)       │
+└────────┬────────┘      └────────┬────────┘
+         │                        │
+         ▼                        ▼
+┌─────────────────┐      ┌─────────────────┐
+│  libbpfgo (CGO) │      │ cilium/ebpf     │  ← 变化点
+│  (Tracee 使用)  │      │ (纯 Go)         │
+└────────┬────────┘      └────────┬────────┘
+         │                        │
+         ▼                        ▼
+┌─────────────────┐      ┌─────────────────┐
+│  Elkeid 协议    │      │  Elkeid 协议    │  ← 不变
+│  输出           │      │  输出           │
+└─────────────────┘      └─────────────────┘
+```
+
+**变化点**：Go 层的 BPF 加载库从 libbpfgo 改为 cilium/ebpf  
+**不变点**：BPF C 代码始终是自己维护的
+
+这是对原方案 Go 层的**技术优化**——BPF 层方案不变，Go 层选择了更优的加载库。
+
+### 更新文件
+- `DESIGN.md`: 在文档开头添加 "技术选型说明：为什么选择 cilium/ebpf 而非 Tracee" 章节
+
+---
+
+## Step 23: Docker 编译环境搭建 [2026-02-27]
+
+### 目标
+实现在 macOS 上通过 Docker 编译 Linux BPF 程序和 Go 二进制，解决本地开发环境无法直接编译 Linux 目标的问题。
+
+### 创建文件
+
+#### 1. `build_scripts/Dockerfile`
+基于 `golang:1.21-bookworm` 镜像，安装 BPF 编译依赖：
+- clang, llvm
+- libbpf-dev
+- linux-headers-generic
+
+#### 2. `build_scripts/build-in-docker.sh`
+完整的 Docker 构建脚本，支持：
+- `./build_scripts/build-in-docker.sh bpf` - 仅编译 BPF C 代码
+- `./build_scripts/build-in-docker.sh go` - 仅编译 Go 二进制
+- `./build_scripts/build-in-docker.sh all` - 完整编译 (BPF + Go)
+
+功能：
+- 自动构建 Docker 镜像
+- 挂载 plugins 目录保持 go.mod replace 路径正确
+- 编译 amd64 和 arm64 两个架构的 Go 二进制
+- 输出产物到 `output/` 目录
+
+#### 3. `build_scripts/README.md`
+使用说明文档
+
+#### 4. `output/.gitignore`
+忽略构建产物
+
+### BPF 代码修复
+
+编译过程中发现并修复的问题：
+
+1. **vmlinux.h 结构体定义不完整**
+   - 添加 `enum pid_type` (PIDTYPE_PID, PIDTYPE_TGID, PIDTYPE_PGID, PIDTYPE_SID)
+   - 完善 `struct signal_struct` (添加 pids[], tty)
+   - 添加 `struct tty_struct`, `struct upid`, `struct pid`
+   - 添加 `struct trace_event_raw_sys_enter`
+   - 添加 `struct iattr`
+
+2. **嵌套 BPF_CORE_READ 错误**
+   - `bpf_core_read_str` 内部不能嵌套 `BPF_CORE_READ`
+   - 修复：先用临时变量存储，再传入
+
+3. **__builtin_memset 不支持**
+   - BPF 不支持 `__builtin_memset`
+   - 修复：添加 `bpf_memzero` 宏实现零初始化
+
+4. **未使用变量警告**
+   - 删除 `vm_start`, `vm_end` 未使用变量
+
+### 编译结果
+
+```
+output/
+├── driver-ebpf-linux-amd64  (6.3 MB)  - x86_64 Linux 二进制
+├── driver-ebpf-linux-arm64  (6.2 MB)  - ARM64 Linux 二进制
+└── elkeid.bpf.o             (1.1 MB)  - BPF 对象文件
+```
+
+### 使用方式
+```bash
+# 完整编译
+./build_scripts/build-in-docker.sh all
+
+# 部署到 Linux 服务器
+scp output/driver-ebpf-linux-amd64 server:/usr/local/bin/driver-ebpf
+scp output/elkeid.bpf.o server:/usr/local/share/elkeid/bpf/
+```
+
+---
+
+## 剩余工作规划 (约 30%)
+
+### 重要遗留功能: Anti-Rootkit 模块
+
+**状态**: ⚠️ 未迁移
+
+原 LKM driver 中的 `anti_rootkit.c` 功能尚未迁移到 eBPF 版本。该模块负责检测内核级 rootkit，包括：
+
+| 事件 ID | 检测项 | LKM 实现方式 |
+|---------|--------|-------------|
+| 700 | SYSCALL_HOOK | 检测系统调用表被篡改 |
+| 701 | LKM_HIDDEN | 检测隐藏内核模块 |
+| 702 | INTERRUPTS_HOOK | 检测中断处理被篡改 |
+| 703 | PROC_FILE_HOOK | 检测 /proc 文件系统被篡改 |
+
+**迁移难点**:
+- 部分检测需要直接读取内核数据结构（syscall table, module list）
+- eBPF 有严格的内存访问限制，可能需要使用 kprobe 或其他技术变通
+- 某些检测可能需要保留为用户态定时扫描（如模块列表对比）
+
+**建议方案**:
+1. 评估哪些检测可以用 eBPF 实现（如 hook 检测可用 kprobe 对比）
+2. 其他检测改为 Go 层定时扫描 `/proc` 和 `/sys`
+3. 保持事件 ID 700-703 兼容
+
+### Phase 1: Linux 环境验证 (优先级: P0)
+
+| 任务 | 说明 | 预计工作量 |
+|------|------|-----------|
+| BPF 加载测试 | 在真实 Linux 环境 (5.4+ with BTF) 加载 elkeid.bpf.o | 2-4h |
+| 验证器错误修复 | 修复 BPF verifier 可能报的错误 (循环、栈溢出等) | 4-8h |
+| Hook 附加验证 | 验证所有 23 个 hook 能正常附加和触发 | 2-4h |
+| 事件解析验证 | 验证 Go 侧能正确解析所有事件类型 | 2-4h |
+
+### Phase 2: 集成测试 (优先级: P1)
+
+| 任务 | 说明 | 预计工作量 |
+|------|------|-----------|
+| Agent 通信测试 | 验证与 Elkeid Agent 的 IPC 通信正常 | 2-4h |
+| 事件格式验证 | 对比 LKM driver 输出，确保字段兼容 | 4-8h |
+| 端到端测试 | 完整链路: BPF事件 → Go处理 → Agent → Server | 4-8h |
+
+### Phase 3: 健壮性完善 (优先级: P2)
+
+| 任务 | 说明 | 预计工作量 |
+|------|------|-----------|
+| 错误处理完善 | 添加详细日志、panic recovery | 2-4h |
+| 资源清理 | 确保程序退出时正确卸载 BPF | 1-2h |
+| 配置热更新 | 支持运行时调整事件过滤 | 2-4h |
+
+### Phase 4: 性能优化 (优先级: P3)
+
+| 任务 | 说明 | 预计工作量 |
+|------|------|-----------|
+| 高频事件压测 | 模拟高并发场景，测试性能瓶颈 | 4-8h |
+| Perf buffer 调优 | 调整 buffer 大小，减少丢包 | 2-4h |
+| Cache 性能优化 | 根据实际负载优化缓存策略 | 2-4h |
+
+### Phase 5: 文档与发布 (优先级: P3)
+
+| 任务 | 说明 | 预计工作量 |
+|------|------|-----------|
+| 部署文档 | 编写完整部署指南 | 2-4h |
+| 配置说明 | 文档化所有配置项 | 1-2h |
+| 版本发布 | 打 tag，更新 changelog | 1-2h |
+
+### 总估算
+- **最小可用版本 (Phase 1-2)**: 约 20-40h 工作量
+- **生产就绪版本 (Phase 1-5)**: 约 40-70h 工作量

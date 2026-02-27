@@ -13,6 +13,15 @@
 
 #define statfunc static __always_inline
 
+#define bpf_memzero(dest, size) \
+    do { \
+        unsigned char *__d = (unsigned char *)(dest); \
+        _Pragma("unroll") \
+        for (int __i = 0; __i < (size) && __i < 512; __i++) { \
+            __d[__i] = 0; \
+        } \
+    } while (0)
+
 #ifndef likely
 #define likely(x) __builtin_expect((x), 1)
 #endif

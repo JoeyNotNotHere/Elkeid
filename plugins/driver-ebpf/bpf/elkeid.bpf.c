@@ -102,7 +102,7 @@ int elkeid_sched_process_exec(struct bpf_raw_tracepoint_args *ctx)
         return 0;
 
     execve_event_t *event = (execve_event_t *)submit_buf->data;
-    __builtin_memset(event, 0, sizeof(*event));
+    bpf_memzero(event, sizeof(*event));
 
     // Fill header
     init_event_header(&event->header, ELKEID_EVENT_EXECVE);
@@ -116,8 +116,8 @@ int elkeid_sched_process_exec(struct bpf_raw_tracepoint_args *ctx)
     event->header.pgid = get_task_pgid(task);
     event->header.sid = get_task_sid(task);        // Elkeid specific: session ID
     event->header.pid_ns = get_task_pid_ns_id(task);
-    bpf_core_read_str(&event->header.comm, sizeof(event->header.comm), 
-                      BPF_CORE_READ(task, comm));
+    const char *task_comm = BPF_CORE_READ(task, comm);
+    bpf_core_read_str(&event->header.comm, sizeof(event->header.comm), task_comm);
 
     // Get executable path from bprm->file
     struct file *exe_file = BPF_CORE_READ(bprm, file);
@@ -204,7 +204,7 @@ int elkeid_sched_process_exit(struct bpf_raw_tracepoint_args *ctx)
         return 0;
 
     exit_event_t *event = (exit_event_t *)submit_buf->data;
-    __builtin_memset(event, 0, sizeof(*event));
+    bpf_memzero(event, sizeof(*event));
 
     // Determine if this is exit (60) or exit_group (231)
     // exit_group is when the whole process (thread group) exits
@@ -235,8 +235,8 @@ int elkeid_sched_process_exit(struct bpf_raw_tracepoint_args *ctx)
     event->header.ppid = get_task_ppid(task);
     event->header.uid = get_task_uid(task);
     event->header.gid = get_task_gid(task);
-    bpf_core_read_str(&event->header.comm, sizeof(event->header.comm),
-                      BPF_CORE_READ(task, comm));
+    const char *exit_task_comm = BPF_CORE_READ(task, comm);
+    bpf_core_read_str(&event->header.comm, sizeof(event->header.comm), exit_task_comm);
 
     // Get exit code
     int exit_code = get_task_exit_code(task);
@@ -323,7 +323,7 @@ int BPF_KRETPROBE(elkeid_security_socket_connect_ret, int ret)
         return 0;
 
     net_event_t *event = (net_event_t *)submit_buf->data;
-    __builtin_memset(event, 0, sizeof(*event));
+    bpf_memzero(event, sizeof(*event));
 
     init_event_header(&event->header, ELKEID_EVENT_CONNECT);
 
@@ -363,7 +363,7 @@ int BPF_KPROBE(elkeid_do_init_module, struct module *mod)
         return 0;
 
     module_event_t *event = (module_event_t *)submit_buf->data;
-    __builtin_memset(event, 0, sizeof(*event));
+    bpf_memzero(event, sizeof(*event));
 
     init_event_header(&event->header, ELKEID_EVENT_MODULE_LOAD);
 
@@ -413,7 +413,7 @@ int BPF_KPROBE(elkeid_commit_creds, struct cred *new_cred)
         return 0;
 
     cred_event_t *event = (cred_event_t *)submit_buf->data;
-    __builtin_memset(event, 0, sizeof(*event));
+    bpf_memzero(event, sizeof(*event));
 
     init_event_header(&event->header, ELKEID_EVENT_UPDATE_CRED);
 
@@ -450,7 +450,7 @@ int BPF_KPROBE(elkeid_security_file_open, struct file *file)
         return 0;
 
     file_event_t *event = (file_event_t *)submit_buf->data;
-    __builtin_memset(event, 0, sizeof(*event));
+    bpf_memzero(event, sizeof(*event));
 
     init_event_header(&event->header, ELKEID_EVENT_OPEN);
 
@@ -490,7 +490,7 @@ int BPF_KPROBE(elkeid_security_inode_unlink,
         return 0;
 
     file_event_t *event = (file_event_t *)submit_buf->data;
-    __builtin_memset(event, 0, sizeof(*event));
+    bpf_memzero(event, sizeof(*event));
 
     init_event_header(&event->header, ELKEID_EVENT_UNLINK);
 
@@ -528,7 +528,7 @@ int BPF_KPROBE(elkeid_security_inode_rename,
         return 0;
 
     file_event_t *event = (file_event_t *)submit_buf->data;
-    __builtin_memset(event, 0, sizeof(*event));
+    bpf_memzero(event, sizeof(*event));
 
     init_event_header(&event->header, ELKEID_EVENT_RENAME);
 
@@ -565,7 +565,7 @@ int BPF_KPROBE(elkeid_call_usermodehelper,
         return 0;
 
     file_event_t *event = (file_event_t *)submit_buf->data;
-    __builtin_memset(event, 0, sizeof(*event));
+    bpf_memzero(event, sizeof(*event));
 
     init_event_header(&event->header, ELKEID_EVENT_USERMODEHELPER);
 
@@ -609,7 +609,7 @@ int BPF_KRETPROBE(elkeid_inet_csk_accept_ret, struct sock *newsk)
         return 0;
 
     net_event_t *event = (net_event_t *)submit_buf->data;
-    __builtin_memset(event, 0, sizeof(*event));
+    bpf_memzero(event, sizeof(*event));
 
     init_event_header(&event->header, ELKEID_EVENT_ACCEPT);
     event->sa_family = family;
@@ -657,7 +657,7 @@ int BPF_KPROBE(elkeid_security_inode_create,
         return 0;
 
     file_event_t *event = (file_event_t *)submit_buf->data;
-    __builtin_memset(event, 0, sizeof(*event));
+    bpf_memzero(event, sizeof(*event));
 
     init_event_header(&event->header, ELKEID_EVENT_CREATE_FILE);
 
@@ -691,7 +691,7 @@ int BPF_KPROBE(elkeid_security_socket_bind,
         return 0;
 
     net_event_t *event = (net_event_t *)submit_buf->data;
-    __builtin_memset(event, 0, sizeof(*event));
+    bpf_memzero(event, sizeof(*event));
 
     init_event_header(&event->header, ELKEID_EVENT_BIND);
 
@@ -736,7 +736,7 @@ int tracepoint_sys_enter_kill(struct trace_event_raw_sys_enter *ctx)
         return 0;
 
     file_event_t *event = (file_event_t *)submit_buf->data;
-    __builtin_memset(event, 0, sizeof(*event));
+    bpf_memzero(event, sizeof(*event));
 
     init_event_header(&event->header, ELKEID_EVENT_KILL);
 
@@ -771,7 +771,7 @@ int tracepoint_sys_enter_tkill(struct trace_event_raw_sys_enter *ctx)
         return 0;
 
     file_event_t *event = (file_event_t *)submit_buf->data;
-    __builtin_memset(event, 0, sizeof(*event));
+    bpf_memzero(event, sizeof(*event));
 
     init_event_header(&event->header, ELKEID_EVENT_KILL_TKILL);
 
@@ -804,7 +804,7 @@ int tracepoint_sys_enter_ptrace(struct trace_event_raw_sys_enter *ctx)
         return 0;
 
     file_event_t *event = (file_event_t *)submit_buf->data;
-    __builtin_memset(event, 0, sizeof(*event));
+    bpf_memzero(event, sizeof(*event));
 
     init_event_header(&event->header, ELKEID_EVENT_PTRACE);
 
@@ -838,7 +838,7 @@ int tracepoint_sys_enter_prctl(struct trace_event_raw_sys_enter *ctx)
         return 0;
 
     file_event_t *event = (file_event_t *)submit_buf->data;
-    __builtin_memset(event, 0, sizeof(*event));
+    bpf_memzero(event, sizeof(*event));
 
     init_event_header(&event->header, ELKEID_EVENT_PRCTL);
 
@@ -874,7 +874,7 @@ int BPF_KPROBE(elkeid_security_inode_symlink,
         return 0;
 
     file_event_t *event = (file_event_t *)submit_buf->data;
-    __builtin_memset(event, 0, sizeof(*event));
+    bpf_memzero(event, sizeof(*event));
 
     init_event_header(&event->header, ELKEID_EVENT_LINK);
 
@@ -914,7 +914,7 @@ int BPF_KPROBE(elkeid_security_sb_mount,
         return 0;
 
     file_event_t *event = (file_event_t *)submit_buf->data;
-    __builtin_memset(event, 0, sizeof(*event));
+    bpf_memzero(event, sizeof(*event));
 
     init_event_header(&event->header, ELKEID_EVENT_MOUNT);
 
@@ -964,7 +964,7 @@ int tracepoint_sys_enter_memfd_create(struct trace_event_raw_sys_enter *ctx)
         return 0;
 
     file_event_t *event = (file_event_t *)submit_buf->data;
-    __builtin_memset(event, 0, sizeof(*event));
+    bpf_memzero(event, sizeof(*event));
 
     init_event_header(&event->header, ELKEID_EVENT_MEMFD_CREATE);
 
@@ -1003,16 +1003,13 @@ int BPF_KPROBE(elkeid_security_file_mprotect,
         return 0;
 
     file_event_t *event = (file_event_t *)submit_buf->data;
-    __builtin_memset(event, 0, sizeof(*event));
+    bpf_memzero(event, sizeof(*event));
 
     init_event_header(&event->header, ELKEID_EVENT_MPROTECT);
 
     // Get VMA info
     if (vma) {
-        unsigned long vm_start = BPF_CORE_READ(vma, vm_start);
-        unsigned long vm_end = BPF_CORE_READ(vma, vm_end);
-        
-        // Store address range info
+        // Store protection info
         event->flags = (int)prot;
         event->mode = (int)reqprot;
 
@@ -1046,7 +1043,7 @@ int tracepoint_sys_enter_setsid(struct trace_event_raw_sys_enter *ctx)
         return 0;
 
     file_event_t *event = (file_event_t *)submit_buf->data;
-    __builtin_memset(event, 0, sizeof(*event));
+    bpf_memzero(event, sizeof(*event));
 
     init_event_header(&event->header, ELKEID_EVENT_SETSID);
 
@@ -1075,7 +1072,7 @@ int BPF_KPROBE(elkeid_security_path_rmdir,
         return 0;
 
     file_event_t *event = (file_event_t *)submit_buf->data;
-    __builtin_memset(event, 0, sizeof(*event));
+    bpf_memzero(event, sizeof(*event));
 
     init_event_header(&event->header, ELKEID_EVENT_RMDIR);
 
@@ -1111,7 +1108,7 @@ int BPF_KPROBE(elkeid_vfs_write,
 
     // Get file path for filtering
     char path_buf[MAX_PATH_LEN];
-    __builtin_memset(path_buf, 0, sizeof(path_buf));
+    bpf_memzero(path_buf, sizeof(path_buf));
     get_file_path(file, path_buf, sizeof(path_buf));
 
     // Map-based path prefix filtering.
@@ -1146,7 +1143,7 @@ int BPF_KPROBE(elkeid_vfs_write,
         return 0;
 
     file_event_t *event = (file_event_t *)submit_buf->data;
-    __builtin_memset(event, 0, sizeof(*event));
+    bpf_memzero(event, sizeof(*event));
 
     init_event_header(&event->header, ELKEID_EVENT_WRITE);
 
@@ -1186,7 +1183,7 @@ int BPF_KPROBE(elkeid_udp_sendmsg,
         return 0;
 
     dns_event_t *event = (dns_event_t *)submit_buf->data;
-    __builtin_memset(event, 0, sizeof(*event));
+    bpf_memzero(event, sizeof(*event));
 
     init_event_header(&event->header, ELKEID_EVENT_DNS);
 
@@ -1265,7 +1262,7 @@ int BPF_KPROBE(elkeid_security_inode_setattr,
         return 0;
 
     file_event_t *event = (file_event_t *)submit_buf->data;
-    __builtin_memset(event, 0, sizeof(*event));
+    bpf_memzero(event, sizeof(*event));
 
     init_event_header(&event->header, ELKEID_EVENT_CHMOD);
 
@@ -1299,7 +1296,7 @@ int BPF_KPROBE(elkeid_security_inode_link,
         return 0;
 
     file_event_t *event = (file_event_t *)submit_buf->data;
-    __builtin_memset(event, 0, sizeof(*event));
+    bpf_memzero(event, sizeof(*event));
 
     init_event_header(&event->header, ELKEID_EVENT_LINK);
 
