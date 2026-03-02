@@ -19,6 +19,7 @@ PLUGINS_DIR="$(dirname "$PROJECT_DIR")"
 OUTPUT_DIR="$PROJECT_DIR/output"
 BUILD_VERSION="${BUILD_VERSION:-1.0.0.0}"
 IMAGE_NAME="elkeid-ebpf-builder"
+GOPROXY="${GOPROXY:-https://goproxy.cn,https://proxy.golang.org,direct}"
 
 log_info()  { echo -e "\033[0;32m[INFO]\033[0m $1"; }
 log_error() { echo -e "\033[0;31m[ERROR]\033[0m $1"; }
@@ -41,6 +42,7 @@ docker run --rm \
     -v "$PLUGINS_DIR:/build/plugins" \
     -v elkeid-go-cache:/go/pkg \
     -w /build/plugins/driver_ebpf/pkg/loader \
+    -e GOPROXY="$GOPROXY" \
     "$IMAGE_NAME" \
     bash -c 'set -e; go generate ./...; echo "==> Generated:"; ls -la elkeid_bpfel_*.go elkeid_bpfel_*.o'
 
@@ -51,6 +53,7 @@ docker run --rm \
     -v elkeid-go-cache:/go/pkg \
     -w /build/plugins/driver_ebpf \
     -e CGO_ENABLED=0 -e GOOS=linux -e GOARCH=amd64 \
+    -e GOPROXY="$GOPROXY" \
     "$IMAGE_NAME" \
     bash -c "set -e; go build -o output/driver-debian-x86_64-${BUILD_VERSION}.plg ."
 
@@ -64,6 +67,7 @@ docker run --rm \
     -v elkeid-go-cache:/go/pkg \
     -w /build/plugins/driver_ebpf \
     -e CGO_ENABLED=0 -e GOOS=linux -e GOARCH=arm64 \
+    -e GOPROXY="$GOPROXY" \
     "$IMAGE_NAME" \
     bash -c "set -e; go build -o output/driver-debian-aarch64-${BUILD_VERSION}.plg ."
 
