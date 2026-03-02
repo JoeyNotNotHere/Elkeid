@@ -21,4 +21,4 @@ package loader
 //
 // After generation, modify loader_linux.go to use the generated loadElkeid().
 
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -cflags "-O2 -g -Wall -D__TARGET_ARCH_x86 -Wno-unused-variable -Wno-pass-failed" -target amd64,arm64 elkeid ../../bpf/elkeid.bpf.c -- -I../../bpf -I../../bpf/common
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -cflags "-O2 -g -Wall -Wno-pass-failed" -target amd64,arm64 elkeid ../../bpf/elkeid.bpf.c -- -I../../bpf -I../../bpf/common
