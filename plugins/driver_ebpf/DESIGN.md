@@ -6,6 +6,128 @@
 
 ---
 
+## 内核版本要求
+
+### 硬性要求
+
+| 依赖特性 | 最低内核版本 | 用途 |
+|---------|------------|------|
+| **BTF (CONFIG_DEBUG_INFO_BTF)** | 5.2+ | CO-RE 结构体字段重定位，**必须** |
+| `bpf_probe_read_kernel` / `_str` | 5.5+ | 安全读取内核内存 |
+| `bpf_d_path` (推荐) | 5.9+ | 高效获取文件完整路径 |
+| `BPF_MAP_TYPE_PERCPU_ARRAY` | 4.6+ | 事件缓冲区 |
+| `BPF_MAP_TYPE_LRU_HASH` | 4.10+ | 进程/Socket 缓存 |
+| raw_tracepoint 程序类型 | 4.17+ | execve/exit 事件 |
+
+**综合要求**:
+
+- **最低可运行**: kernel **5.8+** (BTF 支持稳定，verifier 能力足够)
+- **推荐版本**: kernel **5.10+** (LTS，各发行版默认开启 BTF)
+- **最佳体验**: kernel **5.15+** (verifier 限制更宽松，支持更复杂的 BPF 程序)
+
+> **注意**: kernel 4.x 内核（包括 4.14、4.18 等）无法运行本 eBPF driver，应使用原版 kernel module driver (`plugins/driver`)。
+
+### 各云厂商 Linux 发行版兼容性
+
+#### AWS (Amazon Web Services)
+
+| 系统 | 默认内核 | BTF | 兼容性 | 备注 |
+|------|---------|-----|--------|------|
+| **Amazon Linux 2023** | 6.1 / 6.12 | ✅ | ✅ 完全支持 | 推荐，长期支持至 2028 |
+| **Amazon Linux 2 + kernel-5.10** | 5.10 | ✅ | ✅ 支持 | 需手动安装: `amazon-linux-extras install kernel-5.10` |
+| **Amazon Linux 2 (默认)** | 4.14 | ❌ | ❌ 不支持 | 无 BTF，必须升级内核或使用原版 driver |
+| **Ubuntu 22.04 AMI** | 5.15+ | ✅ | ✅ 完全支持 | |
+| **Ubuntu 20.04 AMI** | 5.4+ | ✅ | ✅ 支持 | BTF 默认开启 |
+| **RHEL 8.x AMI** | 4.18 (含回移) | ⚠️ | ⚠️ 部分支持 | Red Hat 回移了 BTF，但 verifier 能力有限 |
+| **RHEL 9.x AMI** | 5.14+ | ✅ | ✅ 支持 | |
+
+#### 腾讯云 (Tencent Cloud)
+
+| 系统 | 默认内核 | BTF | 兼容性 | 备注 |
+|------|---------|-----|--------|------|
+| **TencentOS Server 3** | 5.4 | ✅ | ✅ 支持 | 腾讯自研，已大规模部署 |
+| **TencentOS Server 2** | 4.14 | ❌ | ❌ 不支持 | 需升级到 TencentOS 3 |
+| **Ubuntu 22.04** | 5.15+ | ✅ | ✅ 完全支持 | |
+| **CentOS 8.x** | 4.18 (含回移) | ⚠️ | ⚠️ 部分支持 | |
+| **CentOS 7.x** | 3.10 | ❌ | ❌ 不支持 | 内核太旧 |
+
+#### 阿里云 (Alibaba Cloud)
+
+| 系统 | 默认内核 | BTF | 兼容性 | 备注 |
+|------|---------|-----|--------|------|
+| **Alibaba Cloud Linux 3 (Alinux3)** | 5.10 | ✅ | ✅ 支持 | 推荐，阿里自研 |
+| **Alibaba Cloud Linux 2 (Alinux2)** | 4.19 | ⚠️ | ⚠️ 部分支持 | BTF 需通过 coolbpf 镜像站获取 |
+| **Ubuntu 22.04** | 5.15+ | ✅ | ✅ 完全支持 | |
+| **Anolis OS 8** | 4.19 / 5.10 | ✅ (5.10) | ✅ 支持 (5.10) | 选择 5.10 内核版本 |
+| **CentOS 7.x** | 3.10 | ❌ | ❌ 不支持 | |
+
+#### 华为云 (Huawei Cloud)
+
+| 系统 | 默认内核 | BTF | 兼容性 | 备注 |
+|------|---------|-----|--------|------|
+| **openEuler 22.03 LTS SP4** | 5.10 | ✅ | ✅ 支持 | 华为自研，支持 CO-RE |
+| **openEuler 24.03 LTS** | 6.6 | ✅ | ✅ 完全支持 | |
+| **EulerOS 2.0 SP10+** | 5.10 | ✅ | ✅ 支持 | |
+| **EulerOS 2.0 SP8/SP9** | 4.18 | ⚠️ | ⚠️ 部分支持 | |
+| **CentOS 7.x** | 3.10 | ❌ | ❌ 不支持 | |
+
+#### 通用发行版
+
+| 系统 | 默认内核 | BTF | 兼容性 | 备注 |
+|------|---------|-----|--------|------|
+| **Ubuntu 24.04 LTS** | 6.8 | ✅ | ✅ 完全支持 | |
+| **Ubuntu 22.04 LTS** | 5.15 | ✅ | ✅ 完全支持 | 推荐 |
+| **Ubuntu 20.04 LTS** | 5.4 | ✅ | ✅ 支持 | BTF 默认开启 |
+| **Debian 12 (Bookworm)** | 6.1 | ✅ | ✅ 完全支持 | |
+| **Debian 11 (Bullseye)** | 5.10 | ✅ | ✅ 支持 | |
+| **Debian 10 (Buster)** | 4.19 | ❌ | ❌ 不支持 | 无 BTF |
+| **RHEL 9 / Rocky 9 / Alma 9** | 5.14 | ✅ | ✅ 支持 | |
+| **RHEL 8 / Rocky 8 / Alma 8** | 4.18 | ⚠️ | ⚠️ 部分支持 | BTF 已回移，但 verifier 受限 |
+| **RHEL 7 / CentOS 7** | 3.10 | ❌ | ❌ 不支持 | |
+| **SUSE 15 SP4+** | 5.14+ | ✅ | ✅ 支持 | |
+| **Fedora 36+** | 5.17+ | ✅ | ✅ 完全支持 | |
+
+### 兼容性图例
+
+- ✅ **完全支持**: 所有 BPF 程序正常加载，全部事件可采集
+- ⚠️ **部分支持**: BTF 可能可用（发行版回移），但 verifier 能力有限，部分程序可能被跳过
+- ❌ **不支持**: 无 BTF / 内核太旧，需使用原版 kernel module driver
+
+### 部署决策树
+
+```
+内核版本 >= 5.8 且有 BTF？
+├── 是 → 使用 driver_ebpf (eBPF 版本)
+│   ├── >= 5.10 → 推荐，全功能
+│   └── 5.8-5.9 → 可用，部分高级功能受限
+└── 否 → 使用 driver (原版 kernel module)
+    ├── 4.x → kernel module 正常工作
+    └── 3.x → kernel module 正常工作
+```
+
+### 运行时检查
+
+eBPF driver 启动时会自动检测内核兼容性：
+1. 尝试加载 BPF Collection — 如果内核无 BTF，会报错: `no BTF found for kernel version`
+2. Tolerant 模式会逐个跳过 verifier 拒绝的程序
+3. 如果 0 个程序成功 attach，退出并提示 `kernel may be too old, need 5.8+`
+
+可通过以下命令提前检查内核是否支持：
+
+```bash
+# 检查内核版本
+uname -r
+
+# 检查 BTF 是否可用
+ls /sys/kernel/btf/vmlinux 2>/dev/null && echo "BTF: OK" || echo "BTF: NOT AVAILABLE"
+
+# 检查 CONFIG_DEBUG_INFO_BTF
+zcat /proc/config.gz 2>/dev/null | grep CONFIG_DEBUG_INFO_BTF || \
+  grep CONFIG_DEBUG_INFO_BTF /boot/config-$(uname -r) 2>/dev/null
+```
+
+---
+
 ## 技术选型说明：为什么选择 cilium/ebpf 而非 Tracee
 
 ### 背景

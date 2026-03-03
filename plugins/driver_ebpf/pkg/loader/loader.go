@@ -237,12 +237,12 @@ func (l *Loader) Attach() error {
 
 	var err error
 
-	// Attach raw tracepoints
+	// Attach raw tracepoints (best effort - may be missing if verifier rejected them)
 	if err = l.attachRawTracepoint("sched_process_exec", progSchedProcessExec); err != nil {
-		return err
+		log.Printf("[loader] Warning: failed to attach raw tracepoint sched_process_exec: %v", err)
 	}
 	if err = l.attachRawTracepoint("sched_process_exit", progSchedProcessExit); err != nil {
-		return err
+		log.Printf("[loader] Warning: failed to attach raw tracepoint sched_process_exit: %v", err)
 	}
 
 	// Attach kprobes
@@ -303,6 +303,10 @@ func (l *Loader) Attach() error {
 		}
 	}
 
+	if len(l.links) == 0 {
+		return fmt.Errorf("no BPF programs were successfully attached (kernel may be too old, need 5.8+)")
+	}
+	log.Printf("[loader] Successfully attached %d BPF programs", len(l.links))
 	return nil
 }
 

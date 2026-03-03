@@ -1365,10 +1365,88 @@ sudo kill PID        → cred(uid 1000→0) + execve(kill) + cred(uid 0→1000)
 | ppid / pgid / sid | ⚠️ 固定为 0 | `init_event_header` 简化，去除 BPF_CORE_READ |
 | pid_ns | ⚠️ 固定为 0 | 同上 |
 
-### 下一步改进方向
+### EC2 生产环境测试 (2026-03-03)
 
-1. **恢复 exe/argv/path 提取**: 使用更简单的 BPF helper 策略 (`bpf_d_path` for 5.9+ kernels, or simplified dentry walk)
-2. **恢复 ppid/pgid**: 使用 `bpf_get_current_task()` + 单层 `BPF_CORE_READ` (而非多层嵌套)
-3. **测试更多事件**: module_load, usermodehelper, DNS (UDP sendmsg) 等
-4. **性能压测**: 高并发场景下的丢包率
-5. **与 Agent 集成测试**: 非 TEST_MODE 下通过 plugins.Client 发送数据
+#### 5.10 内核 (ip-10-151-235-65, x86_64)
+
+- **内核**: 5.10.213-201.855.amzn2.x86_64
+- **加载结果**: ✅ 成功 (26/28 程序加载，`vfs_write` 和 `udp_sendmsg` 被跳过)
+- **事件采集**: 稳定 ~100 events/5s，0 丢失，0 错误
+- **数据上报**: ✅ AC 持续收到数据 (DataType 59/60/62/231 等)
+
+#### 4.14 内核 (ip-10-151-225-215, x86_64)
+
+- **内核**: 4.14.238-182.422.amzn2.x86_64
+- **加载结果**: ❌ 失败 — 无 BTF 支持 (`no BTF found for kernel version`)，全部 26 个程序被 verifier 拒绝
+- **结论**: **eBPF CO-RE driver 最低要求 kernel 5.8+**（推荐 5.10+），4.x 内核应使用原版 kernel module driver
+
+---
+
+## 数据兼容性分析
+
+### 协议兼容性: ✅ 完全兼容
+
+eBPF driver 的数据格式与原版 driver (Rust) 完全一致：
+- **Event ID**: 完全相同 (2/10/42/43/49/59/60/62/82/86/101/112/157/165/200/231/356/601-611/700-703)
+- **Schema 字段名和顺序**: 与 `plugins/driver/src/transformer/schema.rs` 逐字段对比一致
+- **编码协议**: 使用相同的 Elkeid protobuf 二进制格式
+- **后端不会报错或丢弃数据**
+
+### 数据质量差异: ⚠️ 多个关键字段缺失
+
+由于 BPF verifier 复杂度限制，部分 BPF C 代码被大幅简化，导致以下字段为空或不准确：
+
+| 字段 | 原版 driver | eBPF driver 当前 | 影响 | 修复优先级 |
+|------|------------|-----------------|------|-----------|
+| `exe` | ✅ 完整路径 `/usr/bin/curl` | ❌ 空 | 规则引擎无法匹配进程路径 | **P0** |
+| `argv` | ✅ 完整参数 `curl -s http://...` | ❌ 空 | 无法看到命令行详情 | **P0** |
+| `ppid` | ✅ 真实父进程 PID | ⚠️ 固定 0 | 进程树构建不完整 | **P0** |
+| `file` / `file_path` | ✅ 完整路径 | ❌ 空 | 文件监控告警缺内容 | **P1** |
+| `pgid` / `sid` | ✅ 真实值 | ⚠️ 固定 0 | 会话追踪缺失 | P1 |
+| `pns` (pid namespace) | ✅ 真实值 | ⚠️ 固定 0 | 容器识别失效 | P1 |
+| `run_path` (cwd) | ✅ 有值 | ❌ 空 | 路径上下文缺失 | P2 |
+| `stdin` / `stdout` / `tty` | ✅ 有值 | ❌ 空 | SSH 溯源缺失 | P2 |
+| `pid_tree` | ✅ 完整进程链 | ⚠️ 不完整 (依赖 ppid) | 进程链不准 | P2 (修复 ppid 后自动改善) |
+| `exe_hash` | ✅ 有值 | ❌ 空 | 文件指纹缺失 | P2 |
+
+### 结论
+
+- **生产可用性**: 协议格式无问题，数据能正常流转到 AC/Kafka/Manager
+- **检测有效性**: 由于 `exe`/`argv`/`ppid` 缺失，**安全检测规则大概率无法正常触发**
+- **部署建议**: 当前版本可用于验证数据链路和基础架构，但不建议替换原版 driver 用于生产安全检测
+
+---
+
+## 待修复项 (后续迭代)
+
+### P0 — 必须修复 (影响安全检测核心能力)
+
+| 编号 | 任务 | 技术方案 | 预计工作量 |
+|------|------|---------|-----------|
+| F-01 | 恢复 `exe` 字段 | 使用 `bpf_d_path()` (kernel 5.9+) 或简化 dentry walk (3-5 层) | 4-8h |
+| F-02 | 恢复 `argv` 字段 | 在 execve handler 中逐个读取 argv 指针，限制最大长度 | 4-8h |
+| F-03 | 恢复 `ppid` 字段 | `bpf_get_current_task()` + 单层 `BPF_CORE_READ(task, real_parent, tgid)` | 2-4h |
+
+### P1 — 应该修复 (影响数据完整性)
+
+| 编号 | 任务 | 技术方案 | 预计工作量 |
+|------|------|---------|-----------|
+| F-04 | 恢复 `file`/`file_path` 字段 | 同 F-01，统一 dentry path 提取函数 | 2-4h (F-01 完成后) |
+| F-05 | 恢复 `pgid`/`sid`/`pns` | `BPF_CORE_READ(task, ...)` 逐个字段读取，分别验证 | 2-4h |
+| F-06 | 修复 `vfs_write`/`udp_sendmsg` 加载失败 | 分析 5.10 verifier 拒绝原因，简化这两个 handler | 4-8h |
+
+### P2 — 可以改进 (增强检测能力)
+
+| 编号 | 任务 | 技术方案 | 预计工作量 |
+|------|------|---------|-----------|
+| F-07 | 恢复 `run_path`/`stdin`/`stdout`/`tty` | 在 execve handler 中通过 `current->fs->pwd` 读取 | 4-8h |
+| F-08 | 实现 `exe_hash` | Go 层通过 `/proc/<pid>/exe` 计算 SHA256 | 2-4h |
+| F-09 | 支持 4.x 内核 (无 BTF) | 引入 BTFHub 外挂 BTF 或编译时嵌入目标内核 BTF | 8-16h |
+| F-10 | 性能压测 | 高并发场景丢包率测试与 perf buffer 调优 | 4-8h |
+
+### 修复策略建议
+
+1. **优先修复 F-01/F-02/F-03** (exe/argv/ppid)，这三个字段恢复后安全检测规则即可基本生效
+2. F-01 建议使用 `bpf_d_path()` — 该 helper 在 kernel 5.9+ 可用，直接返回完整路径，避免复杂的 dentry walk 逻辑导致 verifier 拒绝
+3. F-03 (ppid) 最简单，可以最先实现：`task = bpf_get_current_task(); ppid = BPF_CORE_READ(task, real_parent, tgid);` 只需一行 BPF_CORE_READ
+4. 每次修复一个字段后，在 ARM64 VM + x86_64 EC2 两个环境验证 verifier 通过情况
