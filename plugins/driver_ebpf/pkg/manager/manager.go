@@ -3,6 +3,7 @@ package manager
 import (
 	"context"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"sync"
@@ -62,6 +63,9 @@ type Manager struct {
 	// Output channel for Elkeid protocol data
 	output chan []byte
 
+	// Test mode: log events to stderr instead of sending to agent
+	testMode bool
+
 	// State
 	running bool
 	mu      sync.Mutex
@@ -71,6 +75,17 @@ type Manager struct {
 // NewManager creates a new Manager instance.
 func NewManager() (*Manager, error) {
 	return NewManagerWithConfig(DefaultConfig())
+}
+
+// NewManagerForTest creates a Manager in test mode (no agent client, events logged to stderr).
+func NewManagerForTest() (*Manager, error) {
+	mgr, err := NewManagerWithConfig(DefaultConfig())
+	if err != nil {
+		return nil, err
+	}
+	mgr.testMode = true
+	mgr.client = nil
+	return mgr, nil
 }
 
 // NewManagerWithConfig creates a new Manager with custom configuration.
@@ -118,7 +133,7 @@ func (m *Manager) Start(ctx context.Context) error {
 		return fmt.Errorf("manager already running")
 	}
 
-	fmt.Println("Starting Elkeid eBPF Driver...")
+	log.Println("[manager] Starting Elkeid eBPF Driver...")
 
 	// Create loader — prefer embedded BPF bytecode (compiled in via bpf2go),
 	// fall back to file path only if embedded is not available.
@@ -137,7 +152,7 @@ func (m *Manager) Start(ctx context.Context) error {
 	// Set config (root pid namespace)
 	rootPidNS := uint32(m.procTree.GetRootPidNs())
 	if err := m.loader.SetConfig(rootPidNS, 0); err != nil {
-		fmt.Printf("Warning: failed to set BPF config: %v\n", err)
+		log.Printf("[manager] Warning: failed to set BPF config: %v", err)
 	}
 
 	// Attach BPF programs
@@ -152,16 +167,16 @@ func (m *Manager) Start(ctx context.Context) error {
 		loader.EventIDMprotect, // mprotect: high volume
 	} {
 		if err := m.loader.SetEventEnabled(evtID, false); err != nil {
-			fmt.Printf("Warning: failed to disable event %d: %v\n", evtID, err)
+			log.Printf("[manager] Warning: failed to disable event %d: %v", evtID, err)
 		}
 	}
 
 	// Whitelist own PID to avoid self-monitoring
 	if err := m.loader.AddPIDWhitelist(uint32(os.Getpid())); err != nil {
-		fmt.Printf("Warning: failed to whitelist own PID: %v\n", err)
+		log.Printf("[manager] Warning: failed to whitelist own PID: %v", err)
 	}
 
-	fmt.Println("BPF programs attached successfully")
+	log.Println("[manager] BPF programs attached successfully")
 
 	// Create event reader
 	readerCfg := &loader.ReaderConfig{
@@ -186,12 +201,12 @@ func (m *Manager) Start(ctx context.Context) error {
 	// Start Anti-Rootkit scanner
 	if m.rootkitScanner != nil {
 		if err := m.rootkitScanner.Start(ctx); err != nil {
-			fmt.Printf("Warning: failed to start Anti-Rootkit scanner: %v\n", err)
+			log.Printf("[manager] Warning: failed to start Anti-Rootkit scanner: %v", err)
 		}
 	}
 
 	m.running = true
-	fmt.Println("Elkeid eBPF Driver started")
+	log.Println("[manager] Elkeid eBPF Driver started")
 
 	return nil
 }
@@ -200,28 +215,68 @@ func (m *Manager) Start(ctx context.Context) error {
 func (m *Manager) processEvents(ctx context.Context) {
 	defer m.wg.Done()
 
+	statsTicker := time.NewTicker(5 * time.Second)
+	defer statsTicker.Stop()
+	var eventCount uint64
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-statsTicker.C:
+			stats := m.reader.Stats()
+			log.Printf("[manager] Stats: total=%d lost=%d errors=%d (batch=%d)",
+				stats.TotalEvents, stats.LostEvents, stats.ParseErrors, eventCount)
+			eventCount = 0
 		case event, ok := <-m.reader.Events():
 			if !ok {
 				return
 			}
+			eventCount++
 
-			// Update caches based on event type
+			if m.testMode {
+				logEvent(event)
+			}
+
 			m.updateCaches(event)
 
-			// Convert to plugins.Record format and send to Agent
 			records := m.converter.ConvertToRecords(event)
 			for _, record := range records {
 				if m.client != nil {
 					if err := m.client.SendRecord(record); err != nil {
-						fmt.Printf("Warning: failed to send record: %v\n", err)
+						log.Printf("[manager] Warning: failed to send record: %v", err)
 					}
 				}
 			}
 		}
+	}
+}
+
+// logEvent prints a human-readable summary of an event to stderr.
+func logEvent(event loader.Event) {
+	h := event.GetHeader()
+	switch e := event.(type) {
+	case *loader.ExecveEvent:
+		log.Printf("[EVENT] execve pid=%d ppid=%d uid=%d comm=%s exe=%s argv=%s",
+			h.PID, h.PPID, h.UID, h.GetComm(), e.GetExe(), e.GetArgv())
+	case *loader.ExitEvent:
+		log.Printf("[EVENT] exit pid=%d comm=%s code=%d", h.PID, h.GetComm(), e.ExitCode)
+	case *loader.NetEvent:
+		log.Printf("[EVENT] net(id=%d) pid=%d comm=%s exe=%s %s:%d -> %s:%d",
+			h.EventID, h.PID, h.GetComm(), e.GetExe(),
+			e.GetSrcIP(), e.SPort, e.GetDstIP(), e.DPort)
+	case *loader.FileEvent:
+		log.Printf("[EVENT] file(id=%d) pid=%d comm=%s exe=%s path=%s",
+			h.EventID, h.PID, h.GetComm(), e.GetExe(), e.GetFilePath())
+	case *loader.ModuleEvent:
+		log.Printf("[EVENT] module pid=%d comm=%s name=%s", h.PID, h.GetComm(), e.GetModuleName())
+	case *loader.CredEvent:
+		log.Printf("[EVENT] cred pid=%d comm=%s old_uid=%d new_uid=%d",
+			h.PID, h.GetComm(), e.OldUID, e.NewUID)
+	case *loader.DNSEvent:
+		log.Printf("[EVENT] dns pid=%d comm=%s query=%s", h.PID, h.GetComm(), e.GetQuery())
+	default:
+		log.Printf("[EVENT] unknown(id=%d) pid=%d comm=%s", h.EventID, h.PID, h.GetComm())
 	}
 }
 
@@ -328,7 +383,7 @@ func (m *Manager) Stop() {
 		return
 	}
 
-	fmt.Println("Stopping Elkeid eBPF Driver...")
+	log.Println("[manager] Stopping Elkeid eBPF Driver...")
 
 	// Stop Anti-Rootkit scanner
 	if m.rootkitScanner != nil {
@@ -357,5 +412,5 @@ func (m *Manager) Stop() {
 	close(m.output)
 
 	m.running = false
-	fmt.Println("Elkeid eBPF Driver stopped")
+	log.Println("[manager] Elkeid eBPF Driver stopped")
 }

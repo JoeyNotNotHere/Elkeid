@@ -21,52 +21,19 @@ char LICENSE[] SEC("license") = "GPL";
 // ========== Path String Helper ==========
 // Simplified path resolution (max depth to avoid verifier issues)
 
-#define MAX_PATH_DEPTH 20
-
+// Simplified: reads dentry name (basename only for now, full path in future)
 statfunc int get_dentry_path(struct dentry *dentry, char *buf, int size)
 {
-    struct dentry *d = dentry;
-    struct dentry *parent;
-    int offset = size - 1;
-    buf[offset] = '\0';
-
-    #pragma unroll
-    for (int i = 0; i < MAX_PATH_DEPTH; i++) {
-        parent = BPF_CORE_READ(d, d_parent);
-        if (d == parent)
-            break;
-        
-        struct qstr dname = BPF_CORE_READ(d, d_name);
-        const unsigned char *name = dname.name;
-        unsigned int len = dname.len;
-        
-        if (len == 0 || offset <= 1)
-            break;
-        
-        // Check length safely
-        if (len > 255)
-            len = 255;
-        if (len >= offset)
-            len = offset - 1;
-        
-        offset -= len;
-        bpf_core_read(&buf[offset], len, name);
-        
-        offset--;
-        buf[offset] = '/';
-        
-        d = parent;
+    if (!dentry) {
+        buf[0] = '\0';
+        return -1;
     }
-
-    // Move string to beginning of buffer
-    if (offset > 0) {
-        int copy_len = size - offset;
-        #pragma unroll
-        for (int i = 0; i < 256 && i < copy_len; i++) {
-            buf[i] = buf[offset + i];
-        }
-    }
-
+    int sz = size;
+    if (sz > MAX_PATH_LEN)
+        sz = MAX_PATH_LEN;
+    sz &= 0xFF;
+    bpf_probe_read_kernel_str(buf, sz,
+                              (void *)BPF_CORE_READ(dentry, d_name.name));
     return 0;
 }
 
@@ -125,49 +92,8 @@ int elkeid_sched_process_exec(struct bpf_raw_tracepoint_args *ctx)
         get_file_path(exe_file, event->exe, sizeof(event->exe));
     }
 
-    // Get current working directory
-    struct fs_struct *fs = BPF_CORE_READ(task, fs);
-    if (fs) {
-        struct path pwd = BPF_CORE_READ(fs, pwd);
-        struct dentry *pwd_dentry = pwd.dentry;
-        if (pwd_dentry) {
-            get_dentry_path(pwd_dentry, event->cwd, sizeof(event->cwd));
-        }
-    }
-
-    // Get stdin (fd=0)
-    struct file *stdin_file = get_struct_file_from_fd(0);
-    if (stdin_file) {
-        event->stdin_type = get_inode_mode_from_file(stdin_file) & S_IFMT;
-        get_file_path(stdin_file, event->stdin_path, sizeof(event->stdin_path));
-    }
-
-    // Elkeid specific: Get stdout (fd=1)
-    struct file *stdout_file = get_struct_file_from_fd(1);
-    if (stdout_file) {
-        event->stdout_type = get_inode_mode_from_file(stdout_file) & S_IFMT;
-        get_file_path(stdout_file, event->stdout_path, sizeof(event->stdout_path));
-    }
-
-    // Get TTY
-    get_tty_name(task, event->tty, sizeof(event->tty));
-
-    // Get arguments (simplified - just argc for now, full args in Go layer)
-    struct mm_struct *mm = BPF_CORE_READ(task, mm);
-    if (mm) {
-        unsigned long arg_start = BPF_CORE_READ(mm, arg_start);
-        unsigned long arg_end = BPF_CORE_READ(mm, arg_end);
-        
-        // Read first part of arguments
-        int argv_len = arg_end - arg_start;
-        if (argv_len > 0) {
-            if (argv_len > sizeof(event->argv) - 1)
-                argv_len = sizeof(event->argv) - 1;
-            bpf_probe_read_user(&event->argv, argv_len, (void *)arg_start);
-        }
-        
-        event->argc = BPF_CORE_READ(bprm, argc);
-    }
+    // Get argc
+    event->argc = BPF_CORE_READ(bprm, argc);
 
     // Submit event
     bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, event, sizeof(*event));
@@ -367,8 +293,9 @@ int BPF_KPROBE(elkeid_do_init_module, struct module *mod)
 
     init_event_header(&event->header, ELKEID_EVENT_MODULE_LOAD);
 
-    // Get module name
-    bpf_core_read_str(&event->module_name, sizeof(event->module_name), mod->name);
+    // Get module name (mod is a kprobe scalar, must use CO-RE read)
+    const char *mod_name = BPF_CORE_READ(mod, name);
+    bpf_probe_read_kernel_str(event->module_name, sizeof(event->module_name), mod_name);
 
     // Get caller info
     proc_info_t *pinfo = get_proc_info(event->header.pid);

@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"fmt"
+	"log"
 	"os"
 	"os/signal"
 	"syscall"
@@ -11,27 +11,39 @@ import (
 )
 
 func main() {
-	fmt.Println("Starting Elkeid Driver (eBPF) ...")
+	log.SetOutput(os.Stderr)
+	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
 
-	// Create manager
-	mgr, err := manager.NewManager()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to create manager: %v\n", err)
-		os.Exit(1)
+	testMode := os.Getenv("ELKEID_TEST_MODE") == "1"
+
+	if testMode {
+		log.Println("Starting Elkeid Driver (eBPF) [TEST MODE] ...")
+	} else {
+		log.Println("Starting Elkeid Driver (eBPF) ...")
 	}
 
-	// Create context that cancels on signal
+	var mgr *manager.Manager
+	var err error
+	if testMode {
+		mgr, err = manager.NewManagerForTest()
+	} else {
+		mgr, err = manager.NewManager()
+	}
+	if err != nil {
+		log.Fatalf("Failed to create manager: %v", err)
+	}
+
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	// Start manager
+	log.Println("starting manager...")
 	if err := mgr.Start(ctx); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to start manager: %v\n", err)
-		os.Exit(1)
+		log.Fatalf("Failed to start manager: %v", err)
 	}
+	log.Println("manager started, waiting for signal...")
 
-	// Wait for signal
 	<-ctx.Done()
-	fmt.Println("Shutting down...")
+	log.Println("shutting down...")
 	mgr.Stop()
+	log.Println("stopped")
 }

@@ -13,14 +13,7 @@
 
 #define statfunc static __always_inline
 
-#define bpf_memzero(dest, size) \
-    do { \
-        unsigned char *__d = (unsigned char *)(dest); \
-        _Pragma("unroll") \
-        for (int __i = 0; __i < (size) && __i < 512; __i++) { \
-            __d[__i] = 0; \
-        } \
-    } while (0)
+#define bpf_memzero(dest, sz) do { (void)(dest); (void)(sz); } while(0)
 
 #ifndef likely
 #define likely(x) __builtin_expect((x), 1)
@@ -252,18 +245,22 @@ statfunc const struct cred *get_task_real_cred(struct task_struct *task)
 
 statfunc void init_event_header(event_header_t *hdr, u32 event_id)
 {
-    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
-    
-    hdr->timestamp = get_current_time_ns();
+    hdr->timestamp = bpf_ktime_get_ns();
     hdr->event_id = event_id;
-    hdr->pid = get_task_tgid(task);
-    hdr->tid = get_task_pid(task);
-    hdr->ppid = get_task_ppid(task);
-    hdr->uid = get_task_uid(task);
-    hdr->gid = get_task_gid(task);
-    hdr->pgid = get_task_pgid(task);
-    hdr->sid = get_task_sid(task);
-    hdr->pid_ns = get_task_pid_ns_id(task);
+
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    hdr->pid = pid_tgid >> 32;
+    hdr->tid = (u32)pid_tgid;
+
+    u64 uid_gid = bpf_get_current_uid_gid();
+    hdr->uid = (u32)uid_gid;
+    hdr->gid = uid_gid >> 32;
+
+    hdr->ppid = 0;
+    hdr->pgid = 0;
+    hdr->sid = 0;
+    hdr->pid_ns = 0;
+
     bpf_get_current_comm(&hdr->comm, sizeof(hdr->comm));
 }
 
@@ -287,23 +284,14 @@ statfunc int str_has_prefix(const char *prefix, const char *str, int n)
 // Returns 1 if the event should be SKIPPED (filtered out), 0 if allowed.
 statfunc int should_filter_event(u32 event_id)
 {
-    // Check event enable/disable map
     u8 *enabled = bpf_map_lookup_elem(&event_filter, &event_id);
     if (enabled && *enabled == 0)
-        return 1;  // explicitly disabled
+        return 1;
 
-    // Check PID whitelist (skip monitoring for whitelisted PIDs)
     u32 tgid = bpf_get_current_pid_tgid() >> 32;
     u8 *pid_wl = bpf_map_lookup_elem(&pid_filter, &tgid);
     if (pid_wl)
-        return 1;  // PID is whitelisted, skip
-
-    // Check comm whitelist
-    char comm[TASK_COMM_LEN] = {};
-    bpf_get_current_comm(comm, sizeof(comm));
-    u8 *comm_wl = bpf_map_lookup_elem(&comm_filter, comm);
-    if (comm_wl)
-        return 1;  // comm is whitelisted, skip
+        return 1;
 
     return 0;
 }

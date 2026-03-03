@@ -15,7 +15,7 @@
 #define MAX_PATH_LEN       256
 #define MAX_ARGS_LEN       256
 #define MAX_STRING_SIZE    4096
-#define MAX_PERCPU_BUFSIZE 65536
+#define MAX_PERCPU_BUFSIZE 8192
 #define MAX_BIN_PATH_SIZE  256
 
 // Address families

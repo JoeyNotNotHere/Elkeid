@@ -2,6 +2,7 @@ package loader
 
 import (
 	"fmt"
+	"log"
 	"os"
 
 	"github.com/cilium/ebpf"
@@ -130,10 +131,28 @@ func NewLoader(cfg *LoaderConfig) (*Loader, error) {
 		return nil, fmt.Errorf("no BPF program available")
 	}
 
-	// Create collection
+	log.Println("[loader] Creating BPF collection (tolerant mode)...")
+
+	// First try full collection load
 	coll, err := ebpf.NewCollection(spec)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create BPF collection: %w", err)
+		log.Printf("[loader] Full collection load failed: %v", err)
+		log.Println("[loader] Falling back to tolerant per-program loading...")
+
+		// Reload spec fresh
+		spec, err = loadEmbeddedSpec()
+		if err != nil {
+			return nil, fmt.Errorf("failed to reload spec: %w", err)
+		}
+
+		// Create maps first, then load programs individually
+		opts := ebpf.CollectionOptions{}
+		coll, err = loadTolerant(spec, opts)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create BPF collection (tolerant): %w", err)
+		}
+	} else {
+		log.Println("[loader] BPF collection created successfully")
 	}
 
 	// Create perf reader for events map
@@ -154,6 +173,48 @@ func NewLoader(cfg *LoaderConfig) (*Loader, error) {
 		links:      make([]link.Link, 0),
 		perfReader: perfReader,
 	}, nil
+}
+
+// loadTolerant creates a Collection, skipping programs that fail verifier checks.
+func loadTolerant(spec *ebpf.CollectionSpec, opts ebpf.CollectionOptions) (*ebpf.Collection, error) {
+	// Keep trying: remove the failing program from the spec and retry.
+	// This lets all maps and non-failing programs load successfully.
+	for attempts := 0; attempts < 30; attempts++ {
+		coll, err := ebpf.NewCollectionWithOptions(spec, opts)
+		if err == nil {
+			return coll, nil
+		}
+
+		// Extract failing program name from error message
+		errMsg := err.Error()
+		removed := false
+		for name := range spec.Programs {
+			if len(name) > 0 && contains(errMsg, "program "+name+":") {
+				log.Printf("[loader] Skipping program %s (verifier rejected)", name)
+				delete(spec.Programs, name)
+				removed = true
+				break
+			}
+		}
+		if !removed {
+			return nil, err
+		}
+	}
+	return nil, fmt.Errorf("too many program failures")
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
+		(len(s) > 0 && stringContains(s, substr)))
+}
+
+func stringContains(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
 }
 
 // loadFromFile loads BPF spec from a file.
@@ -207,7 +268,7 @@ func (l *Loader) Attach() error {
 
 	for symbol, progName := range kprobes {
 		if err = l.attachKprobe(symbol, progName); err != nil {
-			fmt.Printf("Warning: failed to attach kprobe %s: %v\n", symbol, err)
+			log.Printf("[loader] Warning: failed to attach kprobe %s: %v", symbol, err)
 		}
 	}
 
@@ -218,7 +279,7 @@ func (l *Loader) Attach() error {
 	}
 	for symbol, progName := range kretprobes {
 		if err = l.attachKretprobe(symbol, progName); err != nil {
-			fmt.Printf("Warning: failed to attach kretprobe %s: %v\n", symbol, err)
+			log.Printf("[loader] Warning: failed to attach kretprobe %s: %v", symbol, err)
 		}
 	}
 
@@ -238,7 +299,7 @@ func (l *Loader) Attach() error {
 
 	for name, tp := range tracepoints {
 		if err = l.attachTracepoint(tp.category, tp.name, tp.prog); err != nil {
-			fmt.Printf("Warning: failed to attach tracepoint %s: %v\n", name, err)
+			log.Printf("[loader] Warning: failed to attach tracepoint %s: %v", name, err)
 		}
 	}
 

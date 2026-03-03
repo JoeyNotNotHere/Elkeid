@@ -1272,3 +1272,103 @@ plugins/driver_ebpf/
 - ✅ bpf2go 编译架构 (单文件部署)
 - ✅ Docker 编译环境
 - ✅ Anti-Rootkit 模块 (事件 700-703)
+- ✅ Tolerant BPF 加载模式 (跳过 verifier 拒绝的程序)
+- ✅ TEST_MODE 独立测试模式 (事件打印到 stderr)
+- ✅ ARM64 Linux VM 真机测试通过
+
+---
+
+## ARM64 真机测试记录 (2026-03-03)
+
+### 测试环境
+- **平台**: UTM 虚拟机 (Apple Silicon → ARM64)
+- **系统**: Ubuntu 24.04.4 LTS
+- **内核**: 6.8.0-101-generic aarch64
+- **内存**: ~4GB
+- **构建版本**: driver-debian-aarch64-1.7.0.9.plg (6.2MB)
+
+### 问题与解决过程
+
+#### 1. PerCPU Array 内存分配失败 (ENOMEM / E2BIG)
+
+**问题**: ARM64 内核的 `PCPU_MIN_UNIT_SIZE` 为 32KB，原始 `MAX_PERCPU_BUFSIZE=65536` (64KB) 超限。
+
+**解决**: 将 `MAX_PERCPU_BUFSIZE` 减小到 8192 字节，成功创建 PerCPU Array。
+
+#### 2. BPF Verifier 拒绝复杂程序
+
+**问题**: 多个程序因 verifier 复杂度限制被拒绝：
+- `R8 invalid mem access 'scalar'` — verifier 丢失了寄存器的指针类型跟踪
+- `value -2147483648 makes map_value pointer be out of bounds` — 缓冲区边界检查失败
+- `BPF stack limit of 512 bytes is exceeded` — 栈空间超限
+
+**解决策略** (迭代简化):
+1. `init_event_header`: 移除 `BPF_CORE_READ` (ppid/pgid/sid/pid_ns)，改用 BPF helpers + 硬编码 0
+2. `get_dentry_path`: 简化为只读取 basename
+3. `bpf_memzero`: 改为 no-op 宏减少指令数
+4. `elkeid_sched_process_exec`: 去除 cwd/stdin/stdout/tty/argv 字符串提取
+5. `elkeid_do_init_module`: `mod->name` 直接解引用改为 `BPF_CORE_READ` + `bpf_probe_read_kernel_str`
+6. 添加 **tolerant 加载模式**: 逐个移除失败程序后重试，保证其他程序正常加载
+
+#### 3. Docker Desktop vs 真机环境差异
+
+**问题**: Docker Desktop (LinuxKit VM) 因额外内存限制无法创建 PerCPU Array。
+
+**解决**: 使用 UTM ARM64 真机 VM 测试，成功加载。
+
+### 测试结果
+
+**BPF 加载**: ✅ 全部程序一次性加载成功 (无需 tolerant fallback)  
+**统计**: 51 events captured, **0 lost**, 0 errors
+
+#### 采集到的事件类型
+
+| 事件类型 | Event ID | 说明 | 采集状态 |
+|---------|----------|------|---------|
+| execve | 1 | 进程执行 | ✅ 正常 (pid, ppid, uid, comm) |
+| security_file_open | 2 | 文件打开 | ✅ 正常 |
+| net/connect | 42 | 网络连接 | ✅ 正常 (src→dst IP:port) |
+| security_inode_setattr | 62 | 文件属性修改 | ✅ 正常 |
+| security_inode_symlink | 86 | 符号链接创建 | ✅ 正常 |
+| vfs_write/mprotect | 112 | 文件写入/内存保护 | ✅ 正常 |
+| security_sb_mount | 157 | 挂载操作 | ✅ 正常 |
+| security_inode_create | 602 | 文件创建 | ✅ 正常 |
+| security_path_rmdir | 605 | 目录删除 | ✅ 正常 |
+| security_inode_unlink | 606 | 文件删除 | ✅ 正常 |
+| commit_creds | 604 | 凭证变更 | ✅ 正常 (old_uid→new_uid) |
+| exit | - | 进程退出 | ✅ 正常 (exit code) |
+
+#### 测试命令与对应事件
+
+```
+ls /tmp              → execve(ls) + exit
+echo hello > file    → file_open(bash) + inode_create
+cat file             → execve(cat) + exit
+cp file copy         → execve(cp) + inode_create + exit
+rm copy              → execve(rm) + inode_unlink + exit
+ln -s file link      → execve(ln) + inode_symlink + exit
+curl http://127.0.0.1 → execve(curl) + net_connect(127.0.0.1:80) + exit(7)
+ping -c1 127.0.0.1  → execve(ping) + net_connect(127.0.0.1) + file_open(多次) + exit
+whoami / id          → execve + exit
+mkdir + rmdir        → execve + path_rmdir + exit
+python3 -c "..."     → execve(python3) + exit
+sudo kill PID        → cred(uid 1000→0) + execve(kill) + cred(uid 0→1000)
+```
+
+#### 已知限制
+
+| 字段 | 状态 | 原因 |
+|------|------|------|
+| exe (可执行文件路径) | ❌ 空 | `get_dentry_path` 简化为 basename，路径提取被移除 |
+| argv (命令行参数) | ❌ 空 | execve handler 中参数字符串提取被简化 |
+| path (文件路径) | ❌ 空 | 同上，dentry path 提取简化 |
+| ppid / pgid / sid | ⚠️ 固定为 0 | `init_event_header` 简化，去除 BPF_CORE_READ |
+| pid_ns | ⚠️ 固定为 0 | 同上 |
+
+### 下一步改进方向
+
+1. **恢复 exe/argv/path 提取**: 使用更简单的 BPF helper 策略 (`bpf_d_path` for 5.9+ kernels, or simplified dentry walk)
+2. **恢复 ppid/pgid**: 使用 `bpf_get_current_task()` + 单层 `BPF_CORE_READ` (而非多层嵌套)
+3. **测试更多事件**: module_load, usermodehelper, DNS (UDP sendmsg) 等
+4. **性能压测**: 高并发场景下的丢包率
+5. **与 Agent 集成测试**: 非 TEST_MODE 下通过 plugins.Client 发送数据
