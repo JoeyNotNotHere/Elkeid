@@ -76,3 +76,16 @@ cp "$OUTPUT_DIR/driver-debian-aarch64-${BUILD_VERSION}.plg" \
 
 log_info "Build complete!"
 ls -lh "$OUTPUT_DIR"/driver-*.plg
+
+echo ""
+log_info "SHA256 (用于组件创建时填写 sha256 和 signature，两者填同一个值):"
+echo "---"
+for f in "$OUTPUT_DIR"/driver-*-x86_64-*.plg; do
+    [ -f "$f" ] && echo "$(shasum -a 256 "$f" | awk '{print $1}')  $(basename "$f")"
+done | head -1
+echo ""
+for f in "$OUTPUT_DIR"/driver-*-aarch64-*.plg; do
+    [ -f "$f" ] && echo "$(shasum -a 256 "$f" | awk '{print $1}')  $(basename "$f")"
+done | head -1
+echo "---"
+echo "(debian 和 rhel 同架构的文件 SHA256 相同，只需按架构填一个)"

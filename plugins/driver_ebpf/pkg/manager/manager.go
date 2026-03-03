@@ -120,15 +120,12 @@ func (m *Manager) Start(ctx context.Context) error {
 
 	fmt.Println("Starting Elkeid eBPF Driver...")
 
-	// Check if BPF object file exists
-	if _, err := os.Stat(m.config.BPFObjectPath); os.IsNotExist(err) {
-		return fmt.Errorf("BPF object file not found: %s\nPlease compile with: cd bpf && make", m.config.BPFObjectPath)
-	}
-
-	// Create loader
+	// Create loader — prefer embedded BPF bytecode (compiled in via bpf2go),
+	// fall back to file path only if embedded is not available.
 	loaderCfg := &loader.LoaderConfig{
 		BPFObjectPath:  m.config.BPFObjectPath,
 		PerfBufferSize: m.config.PerfBufferSize,
+		UseEmbedded:    true,
 	}
 
 	var err error
