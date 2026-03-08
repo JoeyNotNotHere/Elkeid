@@ -117,6 +117,7 @@ func SendWeakPassData(c *gin.Context) {
 			}
 			weakPassTaskStatusCache.Add(weakPassResp.AgentId, 1*time.Minute, "true")
 		}
+		common.CreateResponse(c, common.SuccessCode, "ok")
 		return
 	}
 	baselineInfo.CheckList = append(baselineInfo.CheckList, checkInfo)
@@ -282,8 +283,8 @@ func GroupStatistics(c *gin.Context) {
 			response.Status = "finished"
 		}
 
-		if _, ok := baseline.BaselineStatisticMap[request.BaselineId]; ok {
-			response = baseline.BaselineStatisticMap[request.BaselineId]
+		if v, ok := baseline.GetBaselineStatistic(request.BaselineId); ok {
+			response = v
 		}
 		common.CreateResponse(c, common.SuccessCode, response)
 		return
@@ -309,8 +310,8 @@ func GroupStatistics(c *gin.Context) {
 			response.Status = "finished"
 		}
 
-		if _, ok := baseline.BaselineStatisticMap[request.GroupId]; ok {
-			response = baseline.BaselineStatisticMap[request.GroupId]
+		if v, ok := baseline.GetBaselineStatistic(request.GroupId); ok {
+			response = v
 		}
 		common.CreateResponse(c, common.SuccessCode, response)
 		return

@@ -6,7 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"os"
 	"os/exec"
 	"strconv"
@@ -105,6 +105,7 @@ func FileLineCheck(ruleStruct RuleStruct, resultMatch ResultMatchFunc) (result b
 			return false, errors.New(errStr)
 		}
 	} else {
+		defer file.Close()
 		scanner := bufio.NewScanner(file)
 		for scanner.Scan() {
 			// If the line is commented, skip
@@ -201,7 +202,7 @@ func FileMd5Check(param []string) (result bool, err error) {
 	if err != nil {
 		return false, fmt.Errorf("file_md5_check : no file find %s", filePath)
 	}
-	fileContentByte, err := ioutil.ReadAll(file)
+	fileContentByte, err := io.ReadAll(file)
 	if err != nil {
 		return false, err
 	}
@@ -253,16 +254,18 @@ func FuncCheck(param []string) (result interface{}, err error) {
 
 // IfDuplicateUser Check if duplicate username does not exist
 func IfDuplicateUser() bool {
-	file, _ := os.Open("/etc/passwd")
+	file, err := os.Open("/etc/passwd")
+	if err != nil {
+		return true
+	}
+	defer file.Close()
 	scanner := bufio.NewScanner(file)
 	userSet := make(map[string]string, 0)
 	for scanner.Scan() {
-		// If the line is commented, skip
 		index := strings.Index(scanner.Text(), ":")
 		if index != -1 {
 			username := scanner.Text()[:index]
 			if _, ok := userSet[username]; ok {
-				fmt.Println(username)
 				return false
 			} else {
 				userSet[username] = ""
@@ -274,7 +277,11 @@ func IfDuplicateUser() bool {
 
 // IfAllowSshPasswd Determine whether the ssh password login is turned open
 func IfAllowSshPasswd() bool {
-	file, _ := os.Open("/etc/ssh/sshd_config")
+	file, err := os.Open("/etc/ssh/sshd_config")
+	if err != nil {
+		return false
+	}
+	defer file.Close()
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())

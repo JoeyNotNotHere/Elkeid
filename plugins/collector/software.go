@@ -309,7 +309,7 @@ func (h *SoftwareHandler) Handle(c *plugins.Client, cache *engine.Cache, seq str
 						psm = p
 					}
 				}
-				if m, ok := cache.Get(5056, "pns"+pns); ok {
+				if m, ok := cache.Get(5056, pns); ok {
 					containerID = m["container_id"]
 					containerName = m["container_name"]
 				}

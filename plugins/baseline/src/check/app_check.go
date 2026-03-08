@@ -20,6 +20,10 @@ var (
 	}
 	weakPasswords = copyMap(defaultWeakPasswords)
 	weakPassMutex sync.RWMutex
+
+	reRequirepass = regexp.MustCompile(`^requirepass\s+(\S+)`)
+	reMasterauth  = regexp.MustCompile(`^masterauth\s+(\S+)`)
+	reMysqlPass   = regexp.MustCompile(`^password\s*=\s*(\S+)`)
 )
 
 func copyMap(src map[string]bool) map[string]bool {
@@ -216,15 +220,11 @@ func CheckRedisWeakPassword() (bool, error) {
 			if strings.HasPrefix(line, "#") || line == "" {
 				continue
 			}
-			if re := regexp.MustCompile(`^requirepass\s+(\S+)`); true {
-				if m := re.FindStringSubmatch(line); len(m) > 1 {
-					requirepass = m[1]
-				}
+			if m := reRequirepass.FindStringSubmatch(line); len(m) > 1 {
+				requirepass = m[1]
 			}
-			if re := regexp.MustCompile(`^masterauth\s+(\S+)`); true {
-				if m := re.FindStringSubmatch(line); len(m) > 1 {
-					masterauth = m[1]
-				}
+			if m := reMasterauth.FindStringSubmatch(line); len(m) > 1 {
+				masterauth = m[1]
 			}
 		}
 		file.Close()
@@ -277,8 +277,7 @@ func CheckMysqlWeakPassword() (bool, error) {
 			if strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") || line == "" {
 				continue
 			}
-			re := regexp.MustCompile(`^password\s*=\s*(\S+)`)
-			if m := re.FindStringSubmatch(line); len(m) > 1 {
+			if m := reMysqlPass.FindStringSubmatch(line); len(m) > 1 {
 				pass := m[1]
 				if pass == "root" || pass == "mysql" {
 					risks = append(risks, fmt.Sprintf("High Risk: %s MySQL using default password", procLabel))

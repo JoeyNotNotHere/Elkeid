@@ -80,7 +80,8 @@ func main() {
 			pluginsTask, err := pluginClient.ReceiveTask()
 			if err != nil {
 				infra.Loger.Println("getTask error:", err.Error())
-				break
+				time.Sleep(5 * time.Second)
+				continue
 			}
 			go func() {
 				// start baseline analysis

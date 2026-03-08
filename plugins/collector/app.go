@@ -105,7 +105,7 @@ var (
 			return nil, nil
 		},
 		sub: &AppRule{
-			name:              "tegine",
+			name:              "tengine",
 			_type:             "web_service",
 			versionRegex:      regexp.MustCompile(`Tengine\/(\d+\.)+\d+`),
 			versionTrimPrefix: `Tengine/`,
@@ -311,7 +311,7 @@ var (
 		versionTrimPrefix: "prometheus, version ",
 		versionArgs:       []string{"--version"},
 		confFunc: func(rc RuleContext) string {
-			res := regexp.MustCompile(`--config\,file(=|\s+)\S+`).Find([]byte(rc.cmdline))
+			res := regexp.MustCompile(`--config\.file(=|\s+)\S+`).Find([]byte(rc.cmdline))
 			if res != nil {
 				return strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(string(res), "--config.file"), "="))
 			}
@@ -510,7 +510,7 @@ var (
 	jenkinsRule = &AppRule{
 		name:         "jenkins",
 		_type:        "devops",
-		versionRegex: regexp.MustCompile(`jenkins\.war`),
+		versionRegex: nil,
 		confFunc: func(rc RuleContext) string {
 			if envs, err := rc.proc.Envs(); err == nil {
 				if home, ok := envs["JENKINS_HOME"]; ok {
@@ -888,7 +888,8 @@ func (h *AppHandler) Handle(c *plugins.Client, cache *engine.Cache, seq string) 
 			containerID = m["container_id"]
 			containerName = m["container_name"]
 		}
-		version := versionCache[exe+pns]
+		cacheKey := exe + "|" + pns
+		version := versionCache[cacheKey]
 		if rule, ok := ruleMap[comm]; ok {
 			_, app := rule.GenerateApp(RuleContext{
 				enterContainer: process.PnsDiffWithRpns(pns),
@@ -904,7 +905,7 @@ func (h *AppHandler) Handle(c *plugins.Client, cache *engine.Cache, seq string) 
 				dir:            dir,
 			})
 			if app != nil {
-				versionCache[pns+exe] = version
+				versionCache[cacheKey] = app.Version
 				c.SendRecord(&plugins.Record{
 					DataType:  int32(h.DataType()),
 					Timestamp: time.Now().Unix(),

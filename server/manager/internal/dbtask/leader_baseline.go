@@ -161,8 +161,7 @@ func AgentInfoSearch(agentId string) (agentInfo AgentCacheStruct) {
 	collection := infra.MongoClient.Database(infra.MongoDatabase).Collection(infra.AgentHeartBeatCollection)
 
 	err = collection.FindOne(context.Background(), bson.M{"agent_id": agentId}).Decode(&agentInfo)
-	if err != nil {
-		// 将数据存入本地缓存
+	if err == nil {
 		agentCache.Add(agentId, checkCacheTimeout, agentInfo)
 	}
 
