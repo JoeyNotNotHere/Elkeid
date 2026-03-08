@@ -1,0 +1,9 @@
+# bpf2go generated files (rebuilt by build_scripts/build-in-docker.sh)
+pkg/loader/elkeid_bpfel_*.go
+pkg/loader/elkeid_bpfel_*.o
+
+# build output
+output/
+
+# BPF compiled objects
+bpf/*.o
