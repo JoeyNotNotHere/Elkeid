@@ -21,19 +21,60 @@ char LICENSE[] SEC("license") = "GPL";
 // ========== Path String Helper ==========
 // Simplified path resolution (max depth to avoid verifier issues)
 
-// Simplified: reads dentry name (basename only for now, full path in future)
+// Walk up dentry tree to build a path (up to 4 components).
+// Reads names immediately to avoid kernel 6.8+ verifier issue where
+// stored kernel pointers lose trusted status for bpf_probe_read_kernel_str.
+// Output is in LEAF-TO-ROOT order (e.g. "/file/parent/gp"); Go reverses it.
+
 statfunc int get_dentry_path(struct dentry *dentry, char *buf, int size)
 {
     if (!dentry) {
         buf[0] = '\0';
         return -1;
     }
+
     int sz = size;
     if (sz > MAX_PATH_LEN)
         sz = MAX_PATH_LEN;
-    sz &= 0xFF;
-    bpf_probe_read_kernel_str(buf, sz,
-                              (void *)BPF_CORE_READ(dentry, d_name.name));
+
+    int pos = 0;
+    struct dentry *d = dentry;
+
+    #pragma unroll
+    for (int i = 0; i < 4; i++) {
+        if (!d)
+            break;
+        struct dentry *parent = BPF_CORE_READ(d, d_parent);
+        if (d == parent)
+            break;
+        pos &= (MAX_PATH_LEN - 1);
+        if (pos >= sz - 2)
+            break;
+        buf[pos++] = '/';
+        int remain = sz - pos;
+        if (remain < 2)
+            break;
+        if (remain > 63)
+            remain = 63;
+        remain &= 0x3F;
+        const unsigned char *np = BPF_CORE_READ(d, d_name.name);
+        int n = bpf_probe_read_kernel_str(buf + pos, remain,
+                                          (const void *)np);
+        if (n > 1) {
+            pos += n - 1;
+            pos &= (MAX_PATH_LEN - 1);
+        }
+        d = parent;
+    }
+
+    if (pos == 0 && sz > 1) {
+        buf[0] = '/';
+        pos = 1;
+    }
+    pos &= (MAX_PATH_LEN - 1);
+    if (pos < sz)
+        buf[pos] = '\0';
+
     return 0;
 }
 
@@ -86,14 +127,31 @@ int elkeid_sched_process_exec(struct bpf_raw_tracepoint_args *ctx)
     const char *task_comm = BPF_CORE_READ(task, comm);
     bpf_core_read_str(&event->header.comm, sizeof(event->header.comm), task_comm);
 
-    // Get executable path from bprm->file
-    struct file *exe_file = BPF_CORE_READ(bprm, file);
-    if (exe_file) {
-        get_file_path(exe_file, event->exe, sizeof(event->exe));
+    // Get executable path from bprm->filename (contains full path from execve call)
+    const char *filename = BPF_CORE_READ(bprm, filename);
+    if (filename) {
+        bpf_probe_read_kernel_str(event->exe, sizeof(event->exe), filename);
     }
 
     // Get argc
     event->argc = BPF_CORE_READ(bprm, argc);
+
+    // Read argv from user memory (arg_start..arg_end contains all args NUL-separated)
+    struct mm_struct *mm = BPF_CORE_READ(task, mm);
+    if (mm) {
+        unsigned long arg_start = BPF_CORE_READ(mm, arg_start);
+        unsigned long arg_end = BPF_CORE_READ(mm, arg_end);
+        unsigned long arg_len = arg_end - arg_start;
+        if (arg_len > MAX_ARGS_LEN - 1)
+            arg_len = MAX_ARGS_LEN - 1;
+        arg_len &= (MAX_ARGS_LEN - 1);
+        if (arg_len > 0) {
+            bpf_probe_read_user(event->argv, arg_len, (void *)arg_start);
+        }
+    }
+
+    // NOTE: cwd/stdin/stdout/tty are filled by Go procfs fallback
+    // (adding them here exceeds verifier complexity on ARM64 6.8 kernel)
 
     // Submit event
     bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, event, sizeof(*event));
@@ -1033,37 +1091,36 @@ int BPF_KPROBE(elkeid_vfs_write,
     if (!file || count < 1)
         return 0;
 
-    // Get file path for filtering
-    char path_buf[MAX_PATH_LEN];
-    bpf_memzero(path_buf, sizeof(path_buf));
-    get_file_path(file, path_buf, sizeof(path_buf));
+    struct dentry *dentry = BPF_CORE_READ(file, f_path.dentry);
+    if (!dentry)
+        return 0;
 
-    // Map-based path prefix filtering.
-    // Check several well-known sensitive prefixes via write_path_filter map.
-    // If the map is empty, fall back to default /etc prefix check.
-    char prefix_key[MAX_FILTER_PATH] = {};
+    // Lightweight filter: walk up to 3 parent dentries checking for
+    // sensitive directories (/etc, /root) without a full path walk.
+    bool match = false;
+    struct dentry *d = dentry;
 
-    // Extract first path component (up to MAX_FILTER_PATH)
     #pragma unroll
-    for (int i = 0; i < MAX_FILTER_PATH - 1 && i < MAX_PATH_LEN; i++) {
-        prefix_key[i] = path_buf[i];
-        if (path_buf[i] == '\0')
+    for (int i = 0; i < 3; i++) {
+        struct dentry *parent = BPF_CORE_READ(d, d_parent);
+        if (!parent || d == parent)
             break;
+
+        char pname[8] = {};
+        const unsigned char *np = BPF_CORE_READ(parent, d_name.name);
+        if (np)
+            bpf_probe_read_kernel_str(pname, sizeof(pname), np);
+
+        if ((pname[0]=='e' && pname[1]=='t' && pname[2]=='c' && pname[3]=='\0') ||
+            (pname[0]=='r' && pname[1]=='o' && pname[2]=='o' && pname[3]=='t')) {
+            match = true;
+            break;
+        }
+        d = parent;
     }
 
-    u8 *allowed = bpf_map_lookup_elem(&write_path_filter, prefix_key);
-    if (!allowed) {
-        // Fallback: only monitor /etc/, /root/, /var/spool/cron
-        if (path_buf[0] != '/')
-            return 0;
-        bool match = false;
-        if (path_buf[1] == 'e' && path_buf[2] == 't' && path_buf[3] == 'c' && path_buf[4] == '/')
-            match = true;
-        if (path_buf[1] == 'r' && path_buf[2] == 'o' && path_buf[3] == 'o' && path_buf[4] == 't')
-            match = true;
-        if (!match)
-            return 0;
-    }
+    if (!match)
+        return 0;
 
     buf_t *submit_buf = get_buf(BUF_IDX_SUBMIT);
     if (!submit_buf)
@@ -1074,8 +1131,8 @@ int BPF_KPROBE(elkeid_vfs_write,
 
     init_event_header(&event->header, ELKEID_EVENT_WRITE);
 
-    __builtin_memcpy(event->file_path, path_buf, sizeof(event->file_path));
-    event->flags = (int)count;  // Store write size in flags
+    get_dentry_path(dentry, event->file_path, sizeof(event->file_path));
+    event->flags = (int)count;
 
     proc_info_t *pinfo = get_proc_info(event->header.pid);
     if (pinfo)
@@ -1124,34 +1181,25 @@ int BPF_KPROBE(elkeid_udp_sendmsg,
         __builtin_memcpy(event->sip, &saddr, 4);
         __builtin_memcpy(event->dip, &daddr, 4);
     } else if (family == AF_INET6) {
-        struct in6_addr saddr = BPF_CORE_READ(sk, __sk_common.skc_v6_rcv_saddr);
-        struct in6_addr daddr = BPF_CORE_READ(sk, __sk_common.skc_v6_daddr);
-        __builtin_memcpy(event->sip, &saddr, 16);
-        __builtin_memcpy(event->dip, &daddr, 16);
+        bpf_core_read(event->sip, 16, &sk->__sk_common.skc_v6_rcv_saddr);
+        bpf_core_read(event->dip, 16, &sk->__sk_common.skc_v6_daddr);
     }
 
-    // Extract DNS query from msghdr iovec
-    // DNS packet: 12-byte header, then query name in label format
+    // Simplified DNS query extraction: copy raw query section from iovec.
+    // Opcode/rcode parsing deferred to Go userspace.
+    event->query[0] = '\0';
     if (msg) {
         const struct iovec *iov = BPF_CORE_READ(msg, msg_iter.__iov);
         if (iov) {
             void *base = BPF_CORE_READ(iov, iov_base);
             unsigned long iov_len = BPF_CORE_READ(iov, iov_len);
             if (base && iov_len > 12) {
-                // Copy raw DNS query section (after 12-byte header)
-                // into event->query; userspace will parse label format
                 unsigned long qlen = iov_len - 12;
-                if (qlen > sizeof(event->query) - 1)
-                    qlen = sizeof(event->query) - 1;
-                // Bound for verifier
-                if (qlen > 0 && qlen <= 255)
+                if (qlen > 253)
+                    qlen = 253;
+                qlen &= 0xFF;
+                if (qlen > 0)
                     bpf_probe_read_user(event->query, qlen, base + 12);
-
-                // Extract opcode from DNS header bytes 2-3
-                u16 dns_flags = 0;
-                bpf_probe_read_user(&dns_flags, 2, base + 2);
-                dns_flags = __builtin_bswap16(dns_flags);
-                event->opcode = (dns_flags >> 11) & 0xF;
             }
         }
     }

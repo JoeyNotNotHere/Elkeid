@@ -257,17 +257,17 @@ func logEvent(event loader.Event) {
 	h := event.GetHeader()
 	switch e := event.(type) {
 	case *loader.ExecveEvent:
-		log.Printf("[EVENT] execve pid=%d ppid=%d uid=%d comm=%s exe=%s argv=%s",
-			h.PID, h.PPID, h.UID, h.GetComm(), e.GetExe(), e.GetArgv())
+		log.Printf("[EVENT] execve pid=%d ppid=%d pgid=%d sid=%d pns=%d uid=%d comm=%s exe=%s argv=%s",
+			h.PID, h.PPID, h.PGID, h.SID, h.PidNS, h.UID, h.GetComm(), e.GetExe(), e.GetArgv())
 	case *loader.ExitEvent:
-		log.Printf("[EVENT] exit pid=%d comm=%s code=%d", h.PID, h.GetComm(), e.ExitCode)
+		log.Printf("[EVENT] exit pid=%d ppid=%d comm=%s code=%d", h.PID, h.PPID, h.GetComm(), e.ExitCode)
 	case *loader.NetEvent:
-		log.Printf("[EVENT] net(id=%d) pid=%d comm=%s exe=%s %s:%d -> %s:%d",
-			h.EventID, h.PID, h.GetComm(), e.GetExe(),
+		log.Printf("[EVENT] net(id=%d) pid=%d ppid=%d comm=%s exe=%s %s:%d -> %s:%d",
+			h.EventID, h.PID, h.PPID, h.GetComm(), e.GetExe(),
 			e.GetSrcIP(), e.SPort, e.GetDstIP(), e.DPort)
 	case *loader.FileEvent:
-		log.Printf("[EVENT] file(id=%d) pid=%d comm=%s exe=%s path=%s",
-			h.EventID, h.PID, h.GetComm(), e.GetExe(), e.GetFilePath())
+		log.Printf("[EVENT] file(id=%d) pid=%d ppid=%d comm=%s exe=%s path=%s",
+			h.EventID, h.PID, h.PPID, h.GetComm(), e.GetExe(), loader.ReverseDentryPath(e.GetFilePath()))
 	case *loader.ModuleEvent:
 		log.Printf("[EVENT] module pid=%d comm=%s name=%s", h.PID, h.GetComm(), e.GetModuleName())
 	case *loader.CredEvent:

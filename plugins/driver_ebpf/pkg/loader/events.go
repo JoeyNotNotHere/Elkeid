@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
+	"strings"
 )
 
 // Constants matching BPF types.h
@@ -362,6 +363,30 @@ func cStringToGo(b []byte) string {
 	}
 	return string(b[:n])
 }
+
+// ReverseDentryPath converts a BPF leaf-to-root dentry path like
+// "/file/parent/gp" to the conventional root-to-leaf "/gp/parent/file".
+// Exported for use by adapter/converter.
+func ReverseDentryPath(s string) string {
+	if s == "" || s == "/" {
+		return s
+	}
+	parts := strings.Split(s, "/")
+	var filtered []string
+	for _, p := range parts {
+		if p != "" {
+			filtered = append(filtered, p)
+		}
+	}
+	if len(filtered) <= 1 {
+		return s
+	}
+	for i, j := 0, len(filtered)-1; i < j; i, j = i+1, j-1 {
+		filtered[i], filtered[j] = filtered[j], filtered[i]
+	}
+	return "/" + strings.Join(filtered, "/")
+}
+
 
 // EventName returns the human-readable name for an event ID.
 func EventName(id uint32) string {

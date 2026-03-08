@@ -1,6 +1,10 @@
 package adapter
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -171,8 +175,35 @@ func (c *NativeConverter) ConvertToRecord(event loader.Event) *plugins.Record {
 	// Fill event-specific fields
 	switch e := event.(type) {
 	case *loader.ExecveEvent:
+		pid := int(header.PID)
 		fields["exe"] = e.GetExe()
-		fields["argv"] = e.GetArgv()
+		fields["argv"] = strings.Join(e.GetArgvList(), " ")
+
+		cwd := e.GetCwd()
+		if cwd == "" {
+			cwd = readProcLink(pid, "cwd")
+		}
+		fields["run_path"] = cwd
+
+		stdinPath := e.GetStdinPath()
+		if stdinPath == "" {
+			stdinPath = readProcLink(pid, "fd/0")
+		}
+		fields["stdin"] = stdinPath
+
+		stdoutPath := e.GetStdoutPath()
+		if stdoutPath == "" {
+			stdoutPath = readProcLink(pid, "fd/1")
+		}
+		fields["stdout"] = stdoutPath
+
+		fields["tty"] = e.GetTTY()
+		fields["exe_hash"] = computeExeHash(pid)
+		fields["res"] = strconv.Itoa(int(e.Ret))
+
+		ssh, ldPreload := readEnvVars(pid)
+		fields["ssh"] = ssh
+		fields["ld_preload"] = ldPreload
 
 	case *loader.ExitEvent:
 		fields["exe"] = e.GetExe()
@@ -189,7 +220,7 @@ func (c *NativeConverter) ConvertToRecord(event loader.Event) *plugins.Record {
 
 	case *loader.FileEvent:
 		fields["exe"] = e.GetExe()
-		fields["file"] = e.GetFilePath()
+		fields["file"] = loader.ReverseDentryPath(e.GetFilePath())
 		fields["flags"] = strconv.Itoa(int(e.Flags))
 
 	case *loader.ModuleEvent:
@@ -304,23 +335,37 @@ func (c *NativeConverter) ConvertExecve(event *loader.ExecveEvent) ([]byte, erro
 	//          socket_pid, ssh, ld_preload, res, socket_argv, ppid_argv, pgid_argv, username, pod_name, exe_hash]
 	values := make([]string, 33)
 
+	pid := int(event.Header.PID)
+
 	c.fillCommonFields(&event.Header, event.GetExe(), values)
 
 	// argv (12)
 	values[12] = strings.Join(event.GetArgvList(), " ")
 
-	// run_path / cwd (13)
-	values[13] = event.GetCwd()
+	// run_path / cwd (13) — BPF value with procfs fallback
+	cwd := event.GetCwd()
+	if cwd == "" {
+		cwd = readProcLink(pid, "cwd")
+	}
+	values[13] = cwd
 
-	// stdin (14)
-	values[14] = event.GetStdinPath()
+	// stdin (14) — BPF value with procfs fallback
+	stdinPath := event.GetStdinPath()
+	if stdinPath == "" {
+		stdinPath = readProcLink(pid, "fd/0")
+	}
+	values[14] = stdinPath
 
-	// stdout (15) - Elkeid specific
-	values[15] = event.GetStdoutPath()
+	// stdout (15) — BPF value with procfs fallback
+	stdoutPath := event.GetStdoutPath()
+	if stdoutPath == "" {
+		stdoutPath = readProcLink(pid, "fd/1")
+	}
+	values[15] = stdoutPath
 
 	// Network fields (16-20) - from socket cache
 	if c.socketCache != nil && c.procTree != nil {
-		if sockInfo, socketPID := c.socketCache.FindProcessSocket(int(event.Header.PID), c.procTree, 4); sockInfo != nil {
+		if sockInfo, socketPID := c.socketCache.FindProcessSocket(pid, c.procTree, 4); sockInfo != nil {
 			values[16] = cache.FormatIPv4(sockInfo.DstIP)            // dip
 			values[17] = strconv.Itoa(int(sockInfo.DstPort))         // dport
 			values[18] = cache.FormatIPv4(sockInfo.SrcIP)            // sip
@@ -337,7 +382,7 @@ func (c *NativeConverter) ConvertExecve(event *loader.ExecveEvent) ([]byte, erro
 	values[22] = event.GetTTY()
 
 	// ssh, ld_preload from /proc/<pid>/environ (24, 25)
-	ssh, ldPreload := readEnvVars(int(event.Header.PID))
+	ssh, ldPreload := readEnvVars(pid)
 	values[24] = ssh
 	values[25] = ldPreload
 
@@ -350,8 +395,8 @@ func (c *NativeConverter) ConvertExecve(event *loader.ExecveEvent) ([]byte, erro
 		values[29] = c.procTree.GetParentArgv(int(event.Header.PGID))
 	}
 
-	// exe_hash (32) - computed in Go if needed
-	values[32] = ""
+	// exe_hash (32) — SHA256 of the executable binary
+	values[32] = computeExeHash(pid)
 
 	return c.encoder.Encode(EventIDExecve, values)
 }
@@ -432,7 +477,7 @@ func (c *NativeConverter) ConvertOpen(event *loader.FileEvent) ([]byte, error) {
 
 	values[12] = strconv.Itoa(int(event.Flags)) // flags
 	values[13] = strconv.Itoa(int(event.Mode))  // mode
-	values[14] = event.GetFilePath()            // file
+	values[14] = loader.ReverseDentryPath(event.GetFilePath()) // file
 
 	c.enrichWithCache(event.Header.PID, values, 21, 18, 19)
 
@@ -486,8 +531,8 @@ func (c *NativeConverter) ConvertRename(event *loader.FileEvent) ([]byte, error)
 
 	c.fillCommonFields(&event.Header, event.GetExe(), values)
 
-	values[12] = event.GetFilePath() // old_name
-	values[13] = event.GetNewPath()  // new_name
+	values[12] = loader.ReverseDentryPath(event.GetFilePath()) // old_name
+	values[13] = loader.ReverseDentryPath(event.GetNewPath())  // new_name
 
 	c.enrichWithCache(event.Header.PID, values, 17, 18, 19)
 
@@ -500,8 +545,8 @@ func (c *NativeConverter) ConvertLink(event *loader.FileEvent) ([]byte, error) {
 
 	c.fillCommonFields(&event.Header, event.GetExe(), values)
 
-	values[12] = event.GetFilePath() // link_path
-	values[13] = event.GetNewPath()  // target
+	values[12] = loader.ReverseDentryPath(event.GetFilePath()) // link_path
+	values[13] = loader.ReverseDentryPath(event.GetNewPath())  // target
 
 	c.enrichWithCache(event.Header.PID, values, 17, 18, 19)
 
@@ -514,7 +559,7 @@ func (c *NativeConverter) ConvertUnlink(event *loader.FileEvent) ([]byte, error)
 
 	c.fillCommonFields(&event.Header, event.GetExe(), values)
 
-	values[12] = event.GetFilePath() // file
+	values[12] = loader.ReverseDentryPath(event.GetFilePath()) // file
 
 	c.enrichWithCache(event.Header.PID, values, 17, 18, 19)
 
@@ -527,8 +572,8 @@ func (c *NativeConverter) ConvertMount(event *loader.FileEvent) ([]byte, error) 
 
 	c.fillCommonFields(&event.Header, event.GetExe(), values)
 
-	values[12] = event.GetFilePath() // dev_name
-	values[13] = event.GetNewPath()  // mount_point
+	values[12] = event.GetFilePath()                          // dev_name (kernel string, not dentry)
+	values[13] = loader.ReverseDentryPath(event.GetNewPath()) // mount_point (dentry path)
 	values[14] = strconv.Itoa(int(event.Flags)) // flags
 
 	c.enrichWithCache(event.Header.PID, values, 17, 18, 19)
@@ -544,7 +589,7 @@ func (c *NativeConverter) ConvertMprotect(event *loader.FileEvent) ([]byte, erro
 
 	values[12] = strconv.Itoa(int(event.Flags)) // prot
 	values[13] = strconv.Itoa(int(event.Mode))  // reqprot
-	values[14] = event.GetFilePath()            // vm_file
+	values[14] = loader.ReverseDentryPath(event.GetFilePath()) // vm_file
 
 	c.enrichWithCache(event.Header.PID, values, 16, 20, 21)
 
@@ -625,8 +670,8 @@ func (c *NativeConverter) ConvertCreateFile(event *loader.FileEvent) ([]byte, er
 
 	c.fillCommonFields(&event.Header, event.GetExe(), values)
 
-	values[12] = event.GetFilePath()            // file
-	values[13] = strconv.Itoa(int(event.Mode))  // mode
+	values[12] = loader.ReverseDentryPath(event.GetFilePath()) // file
+	values[13] = strconv.Itoa(int(event.Mode))                 // mode
 
 	c.enrichWithCache(event.Header.PID, values, 17, 18, 19)
 
@@ -662,7 +707,7 @@ func (c *NativeConverter) ConvertRmdir(event *loader.FileEvent) ([]byte, error) 
 
 	c.fillCommonFields(&event.Header, event.GetExe(), values)
 
-	values[12] = event.GetFilePath() // file (dir_path)
+	values[12] = loader.ReverseDentryPath(event.GetFilePath()) // file (dir_path)
 	// 13=argv, 14=ppid_argv, 15=pgid_argv, 16=username
 	c.enrichWithCache(event.Header.PID, values, 14, 15, 16)
 
@@ -675,8 +720,8 @@ func (c *NativeConverter) ConvertWrite(event *loader.FileEvent) ([]byte, error) 
 
 	c.fillCommonFields(&event.Header, event.GetExe(), values)
 
-	values[12] = event.GetFilePath()            // file
-	values[13] = strconv.Itoa(int(event.Flags)) // sb_id
+	values[12] = loader.ReverseDentryPath(event.GetFilePath()) // file
+	values[13] = strconv.Itoa(int(event.Flags))                // sb_id
 	// 14=argv, 15=ppid_argv, 16=pgid_argv, 17=username
 	c.enrichWithCache(event.Header.PID, values, 15, 16, 17)
 
@@ -716,6 +761,37 @@ func readEnvVars(pid int) (ssh, ldPreload string) {
 		}
 	}
 	return
+}
+
+// readProcLink reads a /proc/<pid>/<name> symlink (e.g. "cwd", "fd/0").
+func readProcLink(pid int, name string) string {
+	target, err := os.Readlink(fmt.Sprintf("/proc/%d/%s", pid, name))
+	if err != nil {
+		return ""
+	}
+	return target
+}
+
+// computeExeHash computes the SHA256 hash of the executable binary.
+// Skips files larger than 50 MB to avoid stalling the pipeline.
+func computeExeHash(pid int) string {
+	exePath := fmt.Sprintf("/proc/%d/exe", pid)
+	f, err := os.Open(exePath)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	stat, err := f.Stat()
+	if err != nil || stat.Size() > 50*1024*1024 {
+		return ""
+	}
+
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // parseDNSLabels converts DNS wire format labels to dot-separated domain name.

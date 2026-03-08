@@ -256,10 +256,20 @@ statfunc void init_event_header(event_header_t *hdr, u32 event_id)
     hdr->uid = (u32)uid_gid;
     hdr->gid = uid_gid >> 32;
 
-    hdr->ppid = 0;
-    hdr->pgid = 0;
-    hdr->sid = 0;
-    hdr->pid_ns = 0;
+    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+
+    // ppid: task->real_parent->tgid (two separate reads to help verifier)
+    struct task_struct *parent = BPF_CORE_READ(task, real_parent);
+    hdr->ppid = BPF_CORE_READ(parent, tgid);
+
+    // pgid: task->signal->pids[PIDTYPE_PGID]->numbers[0].nr
+    hdr->pgid = get_task_pgid(task);
+
+    // sid: task->signal->pids[PIDTYPE_SID]->numbers[0].nr
+    hdr->sid = get_task_sid(task);
+
+    // pid namespace inode number
+    hdr->pid_ns = get_task_pid_ns_id(task);
 
     bpf_get_current_comm(&hdr->comm, sizeof(hdr->comm));
 }
