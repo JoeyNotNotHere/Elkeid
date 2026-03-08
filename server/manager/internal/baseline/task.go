@@ -199,7 +199,7 @@ func StartCheck(checkRequest CheckRequest) (err error) {
 				agentIdList = append(agentIdList, taskRes.ID)
 			}
 
-			weakPassWrite := make([]mongo.WriteModel, len(agentIdList))
+			weakPassWrite := make([]mongo.WriteModel, 0, len(agentIdList))
 			for _, agentId := range agentIdList {
 				agentInfo := dbtask.AgentInfoSearch(agentId)
 				weakPassAgentBaseline.AgentId = agentId
@@ -210,7 +210,7 @@ func StartCheck(checkRequest CheckRequest) (err error) {
 				model := mongo.NewUpdateOneModel().
 					SetFilter(bson.M{"agent_id": agentId, "baseline_id": WeakPassBaseline}).
 					SetUpdate(bson.M{"$set": weakPassAgentBaseline}).SetUpsert(true)
-				weakPassWrite = append(checkTaskWrite, model)
+				weakPassWrite = append(weakPassWrite, model)
 			}
 			_, err := agentBaseCol.BulkWrite(c, weakPassWrite, writeOption)
 			if err != nil {

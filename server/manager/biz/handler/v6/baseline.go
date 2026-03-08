@@ -117,6 +117,7 @@ func SendWeakPassData(c *gin.Context) {
 			}
 			weakPassTaskStatusCache.Add(weakPassResp.AgentId, 1*time.Minute, "true")
 		}
+		common.CreateResponse(c, common.SuccessCode, "ok")
 		return
 	}
 	baselineInfo.CheckList = append(baselineInfo.CheckList, checkInfo)
@@ -282,8 +283,8 @@ func GroupStatistics(c *gin.Context) {
 			response.Status = "finished"
 		}
 
-		if _, ok := baseline.BaselineStatisticMap[request.BaselineId]; ok {
-			response = baseline.BaselineStatisticMap[request.BaselineId]
+		if v, ok := baseline.GetBaselineStatistic(request.BaselineId); ok {
+			response = v
 		}
 		common.CreateResponse(c, common.SuccessCode, response)
 		return
@@ -309,8 +310,8 @@ func GroupStatistics(c *gin.Context) {
 			response.Status = "finished"
 		}
 
-		if _, ok := baseline.BaselineStatisticMap[request.GroupId]; ok {
-			response = baseline.BaselineStatisticMap[request.GroupId]
+		if v, ok := baseline.GetBaselineStatistic(request.GroupId); ok {
+			response = v
 		}
 		common.CreateResponse(c, common.SuccessCode, response)
 		return
@@ -1816,4 +1817,39 @@ func getContainerInfoByIpList(ipList []string) map[string]container.ClusterNodeI
 		ipNodeMap[nodeInfo.IntranetIp] = nodeInfo
 	}
 	return ipNodeMap
+}
+
+// 更新弱口令字典
+func UpdateWeakPassDictHandler(c *gin.Context) {
+	type Request struct {
+		Passwords []string `json:"passwords"`
+	}
+	var req Request
+	if err := c.BindJSON(&req); err != nil {
+		common.CreateResponse(c, common.ParamInvalidErrorCode, err.Error())
+		return
+	}
+
+	user, _ := c.Get("user")
+	userName, _ := user.(string)
+
+	if err := baseline.UpdateWeakPassList(req.Passwords, userName); err != nil {
+		common.CreateResponse(c, common.DBOperateErrorCode, err.Error())
+		return
+	}
+
+	// Trigger sync task asynchronously
+	go baseline.SyncWeakPassTask(userName)
+
+	common.CreateResponse(c, common.SuccessCode, "success")
+}
+
+// 获取弱口令字典
+func GetWeakPassDictHandler(c *gin.Context) {
+	list, err := baseline.GetWeakPassList()
+	if err != nil {
+		// If not found, return empty list
+		list = []string{}
+	}
+	common.CreateResponse(c, common.SuccessCode, list)
 }

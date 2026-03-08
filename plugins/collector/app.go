@@ -19,6 +19,38 @@ import (
 	"go.uber.org/zap"
 )
 
+type App struct {
+	Name    string
+	Version string
+	Type    string
+	Conf    string
+	Matched bool
+}
+type AppRule struct {
+	name              string
+	versionRegex      *regexp.Regexp
+	versionArgs       []string
+	_type             string
+	versionTrimPrefix string
+	versionTrimSuffix string
+	confFunc          func(RuleContext) string
+	matchFunc         func(RuleContext) ([]byte, *App)
+	sub               *AppRule
+}
+type RuleContext struct {
+	enterContainer bool
+	comm           string
+	uid            uint32
+	gid            uint32
+	dir            string
+	containerID    string
+	exe            string
+	cmdline        string
+	ppid           string
+	proc           process.Process
+	appVersion     string
+}
+
 var (
 	apacheRule = &AppRule{
 		name:              "apache",
@@ -65,8 +97,15 @@ var (
 			}
 			return ""
 		},
+		matchFunc: func(rc RuleContext) ([]byte, *App) {
+			cmdline := rc.cmdline
+			if strings.Contains(cmdline, "apisix") {
+				return nil, &App{Name: "apache-apisix", Type: "web_service", Matched: true}
+			}
+			return nil, nil
+		},
 		sub: &AppRule{
-			name:              "tegine",
+			name:              "tengine",
 			_type:             "web_service",
 			versionRegex:      regexp.MustCompile(`Tengine\/(\d+\.)+\d+`),
 			versionTrimPrefix: `Tengine/`,
@@ -84,6 +123,13 @@ var (
 					return "/etc/nginx/nginx.conf"
 				}
 				return ""
+			},
+			matchFunc: func(rc RuleContext) ([]byte, *App) {
+				cmdline := rc.cmdline
+				if strings.Contains(cmdline, "apisix") {
+					return nil, &App{Name: "apache-apisix", Type: "web_service", Matched: true}
+				}
+				return nil, nil
 			},
 			sub: &AppRule{
 				name:              "openresty",
@@ -104,6 +150,13 @@ var (
 						return "/etc/nginx/nginx.conf"
 					}
 					return ""
+				},
+				matchFunc: func(rc RuleContext) ([]byte, *App) {
+					cmdline := rc.cmdline
+					if strings.Contains(cmdline, "apisix") {
+						return nil, &App{Name: "apache-apisix", Type: "web_service", Matched: true}
+					}
+					return nil, nil
 				},
 			},
 		},
@@ -258,7 +311,7 @@ var (
 		versionTrimPrefix: "prometheus, version ",
 		versionArgs:       []string{"--version"},
 		confFunc: func(rc RuleContext) string {
-			res := regexp.MustCompile(`--config\,file(=|\s+)\S+`).Find([]byte(rc.cmdline))
+			res := regexp.MustCompile(`--config\.file(=|\s+)\S+`).Find([]byte(rc.cmdline))
 			if res != nil {
 				return strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(string(res), "--config.file"), "="))
 			}
@@ -387,41 +440,308 @@ var (
 		"dockerd":         dockerRule,
 		"containerd":      containerdRule,
 		"kubelet":         kubeletRule,
+		"java":            javaRule,
+		"python":          pythonRule,
+		"python2":         pythonRule,
+		"python3":         pythonRule,
+		"uwsgi":           pythonRule,
+		"gunicorn":        pythonRule,
+		"node":            nodeRule,
+		"tidb-server":     tidbRule,
+		"zabbix_server":   zabbixRule,
+		"rancher":         rancherRule,
+		"doris_be":        dorisBeRule,
+		"koko":            jumpserverKokoRule,
+		"salt-master":     pythonRule,
+		"salt-minion":     pythonRule,
+		"ansible":         pythonRule,
+		"ansible-playbook": pythonRule,
 	}
 )
 
-type App struct {
-	Name    string
-	Version string
-	Type    string
-	Conf    string
-	Matched bool
+var (
+	// Define Java apps
+	kafkaRule = &AppRule{
+		name:              "kafka",
+		_type:             "message_queue",
+		versionRegex:      regexp.MustCompile(`kafka_\d+\.\d+-(\d+\.\d+\.\d+)`),
+		versionTrimPrefix: "",
+		confFunc: func(rc RuleContext) string {
+			res := regexp.MustCompile(`config\/server\.properties`).Find([]byte(rc.cmdline))
+			if res != nil {
+				return string(res)
+			}
+			return ""
+		},
+	}
+	rocketmqRule = &AppRule{
+		name:  "rocketmq",
+		_type: "message_queue",
+		confFunc: func(rc RuleContext) string {
+			return ""
+		},
+	}
+	nacosRule = &AppRule{
+		name:              "nacos",
+		_type:             "service_discovery",
+		versionRegex:      regexp.MustCompile(`nacos-server-(\d+\.\d+\.\d+)`),
+		versionTrimPrefix: "",
+		confFunc: func(rc RuleContext) string {
+			res := regexp.MustCompile(`-Dnacos\.home=(\S+)`).FindSubmatch([]byte(rc.cmdline))
+			if len(res) > 1 {
+				return filepath.Join(string(res[1]), "conf/application.properties")
+			}
+			return ""
+		},
+	}
+	elasticsearchRule = &AppRule{
+		name:              "elasticsearch",
+		_type:             "database",
+		versionRegex:      regexp.MustCompile(`elasticsearch-(\d+\.\d+\.\d+)`),
+		versionTrimPrefix: "",
+		confFunc: func(rc RuleContext) string {
+			res := regexp.MustCompile(`-Des\.path\.conf=(\S+)`).FindSubmatch([]byte(rc.cmdline))
+			if len(res) > 1 {
+				return filepath.Join(string(res[1]), "elasticsearch.yml")
+			}
+			return ""
+		},
+	}
+	jenkinsRule = &AppRule{
+		name:         "jenkins",
+		_type:        "devops",
+		versionRegex: nil,
+		confFunc: func(rc RuleContext) string {
+			if envs, err := rc.proc.Envs(); err == nil {
+				if home, ok := envs["JENKINS_HOME"]; ok {
+					return filepath.Join(home, "config.xml")
+				}
+			}
+			return ""
+		},
+	}
+	logstashRule = &AppRule{
+		name:  "logstash",
+		_type: "devops",
+		confFunc: func(rc RuleContext) string {
+			return ""
+		},
+	}
+	djangoRule = &AppRule{
+		name:  "django",
+		_type: "web_service",
+		confFunc: func(rc RuleContext) string {
+			res := regexp.MustCompile(`--settings=(\S+)`).FindSubmatch([]byte(rc.cmdline))
+			if len(res) > 1 {
+				return string(res[1])
+			}
+			if envs, err := rc.proc.Envs(); err == nil {
+				if s, ok := envs["DJANGO_SETTINGS_MODULE"]; ok {
+					return s
+				}
+			}
+			return ""
+		},
+	}
+	// General Java Rule
+	javaRule = &AppRule{
+		name: "java_app",
+		confFunc: func(rc RuleContext) string {
+			return ""
+		},
+	}
+	// General Python Rule
+	pythonRule = &AppRule{
+		name: "python_app",
+		confFunc: func(rc RuleContext) string {
+			return ""
+		},
+	}
+	// General Node.js Rule
+	nodeRule = &AppRule{
+		name: "node_app",
+		confFunc: func(rc RuleContext) string {
+			return ""
+		},
+		matchFunc: func(rc RuleContext) ([]byte, *App) {
+			cmdline := rc.cmdline
+			if strings.Contains(cmdline, "kibana") {
+				return nil, &App{Name: "kibana", Type: "web_service", Matched: true}
+			}
+			return nil, nil
+		},
+	}
+	// Independent binary rules
+	ansibleRule = &AppRule{
+		name:  "ansible",
+		_type: "devops",
+		confFunc: func(rc RuleContext) string {
+			return ""
+		},
+	}
+	saltstackRule = &AppRule{
+		name:  "saltstack",
+		_type: "devops",
+		confFunc: func(rc RuleContext) string {
+			return ""
+		},
+	}
+	jumpserverRule = &AppRule{
+		name:  "jumpserver",
+		_type: "devops",
+		confFunc: func(rc RuleContext) string {
+			return ""
+		},
+	}
+	tidbRule = &AppRule{
+		name:  "tidb",
+		_type: "database",
+		confFunc: func(rc RuleContext) string {
+			return ""
+		},
+	}
+	zabbixRule = &AppRule{
+		name:  "zabbix",
+		_type: "devops",
+		confFunc: func(rc RuleContext) string {
+			return ""
+		},
+	}
+	rancherRule = &AppRule{
+		name:  "rancher",
+		_type: "devops",
+		confFunc: func(rc RuleContext) string {
+			return ""
+		},
+	}
+	// Independent binary rules for components not running on JVM/Python
+	dorisBeRule = &AppRule{
+		name:  "doris",
+		_type: "database",
+		confFunc: func(rc RuleContext) string {
+			return ""
+		},
+	}
+	jumpserverKokoRule = &AppRule{
+		name:  "jumpserver",
+		_type: "devops",
+		confFunc: func(rc RuleContext) string {
+			return ""
+		},
+	}
+)
+
+// extractVersionFromCmdline uses FindSubmatch to extract version from cmdline via capture group.
+// Falls back to FindString if no capture group found.
+func extractVersionFromCmdline(cmdline string, re *regexp.Regexp) string {
+	if re == nil {
+		return ""
+	}
+	matches := re.FindStringSubmatch(cmdline)
+	if len(matches) > 1 {
+		return matches[1]
+	}
+	return re.FindString(cmdline)
 }
-type AppRule struct {
-	name              string
-	versionRegex      *regexp.Regexp
-	versionArgs       []string
-	_type             string
-	versionTrimPrefix string
-	versionTrimSuffix string
-	confFunc          func(RuleContext) string
-	sub               *AppRule
+
+type javaAppEntry struct {
+	keyword string
+	rule    *AppRule
+	name    string
+	appType string
 }
-type RuleContext struct {
-	enterContainer bool
-	comm           string
-	uid            uint32
-	gid            uint32
-	dir            string
-	containerID    string
-	exe            string
-	cmdline        string
-	ppid           string
-	proc           process.Process
-	appVersion     string
+
+var javaRuleApps = []javaAppEntry{
+	{keyword: "kafka", rule: kafkaRule},
+	{keyword: "rocketmq", rule: rocketmqRule},
+	{keyword: "nacos", rule: nacosRule},
+	{keyword: "elasticsearch", rule: elasticsearchRule},
+	{keyword: "jenkins", rule: jenkinsRule},
+	{keyword: "logstash", rule: logstashRule},
+}
+
+var javaSimpleApps = []javaAppEntry{
+	{keyword: "hadoop", name: "hadoop", appType: "big_data"},
+	{keyword: "druid", name: "druid", appType: "database"},
+	{keyword: "canal", name: "canal", appType: "middleware"},
+	{keyword: "doris", name: "doris", appType: "database"},
+	{keyword: "nexus", name: "nexus", appType: "devops"},
+	{keyword: "ruoyi", name: "ruoyi", appType: "web_service"},
+	{keyword: "skywalking", name: "skywalking", appType: "devops"},
+	{keyword: "xxl-job", name: "xxl-job", appType: "devops"},
+	{keyword: "ambari", name: "ambari", appType: "devops"},
+	{keyword: "logbase", name: "logbase", appType: "big_data"},
+}
+
+type pythonAppEntry struct {
+	keyword  string
+	keyword2 string
+	rule     *AppRule
+	name     string
+	appType  string
+}
+
+var pythonSimpleApps = []pythonAppEntry{
+	{keyword: "manage.py", keyword2: "django", rule: djangoRule},
+	{keyword: "ansible", name: "ansible", appType: "devops"},
+	{keyword: "salt", name: "saltstack", appType: "devops"},
+	{keyword: "jumpserver", name: "jumpserver", appType: "devops"},
+	{keyword: "archery", name: "archery", appType: "devops"},
+}
+
+func dispatchJavaApp(rc RuleContext) ([]byte, *App) {
+	cmdline := rc.cmdline
+	for _, entry := range javaRuleApps {
+		if strings.Contains(cmdline, entry.keyword) {
+			if entry.rule.versionRegex != nil && rc.appVersion == "" {
+				rc.appVersion = extractVersionFromCmdline(cmdline, entry.rule.versionRegex)
+			}
+			return entry.rule.GenerateApp(rc)
+		}
+	}
+	for _, entry := range javaSimpleApps {
+		if strings.Contains(cmdline, entry.keyword) {
+			return nil, &App{Name: entry.name, Type: entry.appType, Matched: true}
+		}
+	}
+	return nil, nil
+}
+
+func dispatchPythonApp(rc RuleContext) ([]byte, *App) {
+	cmdline := rc.cmdline
+	for _, entry := range pythonSimpleApps {
+		matched := strings.Contains(cmdline, entry.keyword)
+		if !matched && entry.keyword2 != "" {
+			matched = strings.Contains(cmdline, entry.keyword2)
+		}
+		if matched {
+			if entry.rule != nil {
+				return entry.rule.GenerateApp(rc)
+			}
+			return nil, &App{Name: entry.name, Type: entry.appType, Matched: true}
+		}
+	}
+	return nil, nil
 }
 
 func (r *AppRule) GenerateApp(rc RuleContext) ([]byte, *App) {
+	// Check matchFunc first (fixes APISIX/Kibana recognition)
+	if r.matchFunc != nil {
+		if output, app := r.matchFunc(rc); app != nil {
+			if r.confFunc != nil {
+				app.Conf = r.confFunc(rc)
+			}
+			return output, app
+		}
+	}
+
+	if r.name == "java_app" {
+		return dispatchJavaApp(rc)
+	}
+	if r.name == "python_app" {
+		return dispatchPythonApp(rc)
+	}
+
 	var output []byte
 	var app *App
 	if r.sub != nil {
@@ -568,7 +888,8 @@ func (h *AppHandler) Handle(c *plugins.Client, cache *engine.Cache, seq string) 
 			containerID = m["container_id"]
 			containerName = m["container_name"]
 		}
-		version := versionCache[exe+pns]
+		cacheKey := exe + "|" + pns
+		version := versionCache[cacheKey]
 		if rule, ok := ruleMap[comm]; ok {
 			_, app := rule.GenerateApp(RuleContext{
 				enterContainer: process.PnsDiffWithRpns(pns),
@@ -584,7 +905,7 @@ func (h *AppHandler) Handle(c *plugins.Client, cache *engine.Cache, seq string) 
 				dir:            dir,
 			})
 			if app != nil {
-				versionCache[pns+exe] = version
+				versionCache[cacheKey] = app.Version
 				c.SendRecord(&plugins.Record{
 					DataType:  int32(h.DataType()),
 					Timestamp: time.Now().Unix(),

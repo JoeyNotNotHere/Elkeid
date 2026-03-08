@@ -22,11 +22,40 @@ import (
 
 const (
 	MaxRecursionLevel = 3
+	MaxJarPerProcess  = 500
 )
 
 var (
 	VersionReg = regexp.MustCompile(`-[0-9]`)
 )
+
+func parseClasspath(cmdline string, cwd string) []string {
+	var paths []string
+	parts := strings.Fields(cmdline)
+	for i, part := range parts {
+		if part == "-jar" && i+1 < len(parts) {
+			path := parts[i+1]
+			if !filepath.IsAbs(path) {
+				path = filepath.Join(cwd, path)
+			}
+			paths = append(paths, path)
+			libDir := filepath.Join(filepath.Dir(path), "lib")
+			paths = append(paths, libDir)
+		} else if (part == "-cp" || part == "-classpath") && i+1 < len(parts) {
+			cp := parts[i+1]
+			for _, p := range strings.Split(cp, ":") {
+				if strings.HasSuffix(p, "/*") {
+					p = strings.TrimSuffix(p, "/*")
+				}
+				if !filepath.IsAbs(p) {
+					p = filepath.Join(cwd, p)
+				}
+				paths = append(paths, p)
+			}
+		}
+	}
+	return paths
+}
 
 type SoftwareHandler struct{}
 
@@ -54,6 +83,7 @@ type Software struct {
 	Psm     string `mapstructure:"psm"`
 
 	PackageSeq string `mapstructure:"package_seq"`
+	Path       string `mapstructure:"path"`
 }
 
 func parsePypiName(name string) (ret *Software, err error) {
@@ -98,22 +128,34 @@ func findJar(c *plugins.Client, rec *plugins.Record, r *zip.Reader, n string) {
 			rec.Timestamp = time.Now().Unix()
 			c.SendRecord(rec)
 		}
-		// 补全jar包版本
 		if version == "" && f.Name == "META-INF/MANIFEST.MF" {
-			if r, err := f.Open(); err == nil {
-				for sc := bufio.NewScanner(r); sc.Scan(); {
+			if rc, err := f.Open(); err == nil {
+				sc := bufio.NewScanner(rc)
+				for sc.Scan() {
 					if strings.HasPrefix(sc.Text(), "Implementation-Version:") {
 						version = strings.TrimSpace(sc.Text()[len("Implementation-Version:"):])
 						break
 					}
-					r.Close()
 				}
+				rc.Close()
+			}
+		}
+		if version == "" && strings.HasSuffix(f.Name, "pom.properties") {
+			if rc, err := f.Open(); err == nil {
+				sc := bufio.NewScanner(rc)
+				for sc.Scan() {
+					if strings.HasPrefix(sc.Text(), "version=") {
+						version = strings.TrimSpace(sc.Text()[len("version="):])
+						break
+					}
+				}
+				rc.Close()
 			}
 		}
 	})
 	rec.Data.Fields["name"] = name
 	rec.Data.Fields["sversion"] = version
-	rec.Data.Fields["path"] = r.Name()
+	rec.Data.Fields["path"] = n
 	rec.Timestamp = time.Now().Unix()
 	c.SendRecord(rec)
 }
@@ -267,7 +309,7 @@ func (h *SoftwareHandler) Handle(c *plugins.Client, cache *engine.Cache, seq str
 						psm = p
 					}
 				}
-				if m, ok := cache.Get(5056, "pns"+pns); ok {
+				if m, ok := cache.Get(5056, pns); ok {
 					containerID = m["container_id"]
 					containerName = m["container_name"]
 				}
@@ -291,18 +333,73 @@ func (h *SoftwareHandler) Handle(c *plugins.Client, cache *engine.Cache, seq str
 			}
 			if fs, err := p.Fds(); err == nil {
 				set := mapset.NewSet()
+				jarCount := 0
+				procRoot := filepath.Join("/proc", p.Pid(), "root")
+
+				scanJar := func(jarPath, reportPath string) {
+					if jarCount >= MaxJarPerProcess {
+						return
+					}
+					if set.Contains(reportPath) {
+						return
+					}
+					base := filepath.Base(reportPath)
+					if base != "rt.jar" && (strings.Contains(reportPath, "jdk") || strings.Contains(reportPath, "jre")) {
+						return
+					}
+					if r, err := zip.OpenReader(jarPath); err == nil {
+						findJar(c, rec, r, reportPath)
+						r.Close()
+						jarCount++
+					}
+					set.Add(reportPath)
+				}
+
 				for _, fn := range fs {
 					if filepath.Ext(fn) == ".jar" {
-						if set.Contains(fn) ||
-							(filepath.Base(fn) != "rt.jar" &&
-								(strings.Contains(fn, "jdk") || strings.Contains(fn, "jre"))) {
-							continue
+						scanJar(filepath.Join(procRoot, fn), fn)
+					}
+				}
+
+				if cwd, err := p.Cwd(); err == nil {
+					paths := parseClasspath(cmdline, cwd)
+					for _, path := range paths {
+						if jarCount >= MaxJarPerProcess {
+							break
 						}
-						if r, err := zip.OpenReader(filepath.Join("/proc", p.Pid(), "root", fn)); err == nil {
-							findJar(c, rec, r, fn)
-							r.Close()
+						if filepath.Ext(path) == ".jar" {
+							scanJar(filepath.Join(procRoot, path), path)
+						} else {
+							rootPath := filepath.Join(procRoot, path)
+							if fi, err := os.Stat(rootPath); err == nil && fi.IsDir() {
+								godirwalk.Walk(rootPath, &godirwalk.Options{
+									Callback: func(osPathname string, directoryEntry *godirwalk.Dirent) error {
+										if jarCount >= MaxJarPerProcess {
+											return filepath.SkipDir
+										}
+										if directoryEntry.IsDir() {
+											if rel, err := filepath.Rel(rootPath, osPathname); err == nil {
+												if strings.Count(rel, string(os.PathSeparator)) >= MaxRecursionLevel {
+													return filepath.SkipDir
+												}
+											}
+										}
+										if strings.HasSuffix(directoryEntry.Name(), ".jar") {
+											relPath := strings.TrimPrefix(osPathname, procRoot)
+											if !strings.HasPrefix(relPath, "/") {
+												relPath = "/" + relPath
+											}
+											scanJar(osPathname, relPath)
+										}
+										return nil
+									},
+									Unsorted: true,
+									ErrorCallback: func(osPathname string, err error) godirwalk.ErrorAction {
+										return godirwalk.SkipNode
+									},
+								})
+							}
 						}
-						set.Add(fn)
 					}
 				}
 			}

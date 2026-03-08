@@ -5,10 +5,11 @@ import (
 	"baseline/src/check"
 	"baseline/src/linux"
 	"encoding/json"
-	"github.com/bytedance/plugins"
 	"math/rand"
 	"runtime"
 	"time"
+
+	"github.com/bytedance/plugins"
 )
 
 var (
@@ -79,7 +80,8 @@ func main() {
 			pluginsTask, err := pluginClient.ReceiveTask()
 			if err != nil {
 				infra.Loger.Println("getTask error:", err.Error())
-				break
+				time.Sleep(5 * time.Second)
+				continue
 			}
 			go func() {
 				// start baseline analysis

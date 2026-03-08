@@ -2,12 +2,14 @@ package baseline
 
 import (
 	"context"
+	"sync"
+	"time"
+
 	"github.com/bytedance/Elkeid/server/manager/infra"
 	"github.com/bytedance/Elkeid/server/manager/infra/ylog"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
-	"time"
 )
 
 // 定时计算基线统计信息
@@ -23,7 +25,23 @@ type CalcuBaselineStatisticRes struct {
 	LastCheckTime int64  `json:"last_check_time"`
 }
 
-var BaselineStatisticMap = make(map[int]CalcuBaselineStatisticRes, 0)
+var (
+	BaselineStatisticMap  = make(map[int]CalcuBaselineStatisticRes, 0)
+	baselineStatisticLock sync.RWMutex
+)
+
+func GetBaselineStatistic(key int) (CalcuBaselineStatisticRes, bool) {
+	baselineStatisticLock.RLock()
+	defer baselineStatisticLock.RUnlock()
+	v, ok := BaselineStatisticMap[key]
+	return v, ok
+}
+
+func setBaselineStatistic(key int, val CalcuBaselineStatisticRes) {
+	baselineStatisticLock.Lock()
+	defer baselineStatisticLock.Unlock()
+	BaselineStatisticMap[key] = val
+}
 
 func calcuBaselineStatistic() {
 	c := context.Background()
@@ -95,7 +113,7 @@ func calcuBaselineStatistic() {
 		if statisRes.ChecklistNum != 0 {
 			statisRes.PassRate = int(statisRes.PassNum * 100 / statisRes.ChecklistNum)
 		}
-		BaselineStatisticMap[baselineId] = statisRes
+		setBaselineStatistic(baselineId, statisRes)
 	}
 
 	// 策略组统计
@@ -125,9 +143,7 @@ func calcuBaselineStatistic() {
 
 		// 计算其他统计数据
 		for _, baselineId := range baselineList {
-			var baselineSta CalcuBaselineStatisticRes
-			if _, ok := BaselineStatisticMap[baselineId]; ok {
-				baselineSta = BaselineStatisticMap[baselineId]
+			if baselineSta, ok := GetBaselineStatistic(baselineId); ok {
 				statisRes.RiskNum += baselineSta.RiskNum
 				statisRes.ChecklistNum += baselineSta.ChecklistNum
 				statisRes.PassHostNum += baselineSta.PassHostNum
@@ -138,7 +154,7 @@ func calcuBaselineStatistic() {
 		if statisRes.ChecklistNum != 0 {
 			statisRes.PassRate = int(statisRes.PassNum * 100 / statisRes.ChecklistNum)
 		}
-		BaselineStatisticMap[groupId] = statisRes
+		setBaselineStatistic(groupId, statisRes)
 	}
 }
 
